@@ -41,3 +41,6 @@ build/
 dist/
 *.egg
 
+# Frontend
+node_modules/
+.vite/
