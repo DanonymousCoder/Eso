@@ -1,4 +1,41 @@
-# Eso — Backend Skeleton
+# Eso — AI Transaction Guardian
+
+Eso now includes a React + Tailwind web dashboard and the Django REST API that
+scores simulated transfers, pauses unusual activity, and records every outcome
+in a transparency ledger.
+
+## Frontend
+
+The frontend lives in `src/` and covers the complete hackathon demonstration:
+
+- authenticated sign-in and registration;
+- responsive guardian dashboard;
+- simulated Nigerian bank transfer form;
+- live API-backed transaction analysis;
+- explainable high-risk intervention with proceed/cancel choices;
+- approved, overridden, and cancelled outcome screens;
+- searchable, filterable, exportable transparency ledger; and
+- guardian preferences, notifications, and appearance settings.
+
+Create a local frontend environment file if the API is not running on the
+default address:
+
+```bash
+cp .env.frontend.example .env.local
+```
+
+Then run:
+
+```bash
+npm install
+npm run dev
+```
+
+The frontend expects Django at `http://localhost:8000/api` by default and uses
+the JWT login, refresh, transaction, decision, baseline, and ledger endpoints
+documented below.
+
+## Backend
 
 Django REST Framework backend for the Eso hackathon MVP. Handles transaction
 intake, calls out to the ML dev's scoring service, and maintains the
