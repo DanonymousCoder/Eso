@@ -1,6 +1,8 @@
 # Environment
 .env
 .env.local
+.env.production
+.venv/
 venv/
 env/
 ENV/
@@ -13,6 +15,7 @@ __pycache__/
 *$py.class
 *.egg-info/
 .eggs/
+dist/
 
 # Django
 db.sqlite3
@@ -21,7 +24,7 @@ staticfiles/
 media/
 *.log
 
-# Django secret/local settings overrides, if you ever add one
+# Django secret/local settings overrides
 local_settings.py
 
 # IDE
@@ -29,18 +32,32 @@ local_settings.py
 .idea/
 *.swp
 *.swo
+*~
 .DS_Store
+Thumbs.db
 
 # Testing
 .coverage
+.coverage.*
 htmlcov/
 .pytest_cache/
+coverage/
 
 # Distribution
 build/
 dist/
 *.egg
+*.whl
 
 # Frontend
 node_modules/
 .vite/
+
+# Pre-commit
+.pre-commit-config.yaml
+
+# Git hooks
+.git/hooks/
+
+# ruff
+.ruff_cache/
