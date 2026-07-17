@@ -22,9 +22,9 @@ class ServicesTest(TestCase):
         same = services.get_or_create_baseline(str(self.user.id))
         self.assertEqual(baseline.id, same.id)
 
-    @patch("transactions.services.call_ml_scoring_service")
-    def test_score_transaction_approved(self, mock_call):
-        mock_call.return_value = {"risk_score": 0.3, "reason": "Looks fine"}
+    @patch("transactions.services._tier1_local_pkl")
+    def test_score_transaction_approved(self, mock_tier1):
+        mock_tier1.return_value = {"risk_score": 0.3, "reason": "Looks fine"}
         transaction = Transaction.objects.create(
             user_id=str(self.user.id),
             recipient="test_recipient",
@@ -34,9 +34,9 @@ class ServicesTest(TestCase):
         self.assertEqual(result.status, Transaction.Status.APPROVED)
         self.assertAlmostEqual(result.risk_score, 0.3)
 
-    @patch("transactions.services.call_ml_scoring_service")
-    def test_score_transaction_flagged(self, mock_call):
-        mock_call.return_value = {"risk_score": 0.85, "reason": "Suspicious activity"}
+    @patch("transactions.services._tier1_local_pkl")
+    def test_score_transaction_flagged(self, mock_tier1):
+        mock_tier1.return_value = {"risk_score": 0.85, "reason": "Suspicious activity"}
         transaction = Transaction.objects.create(
             user_id=str(self.user.id),
             recipient="new_recipient",
@@ -46,9 +46,9 @@ class ServicesTest(TestCase):
         self.assertEqual(result.status, Transaction.Status.FLAGGED)
         self.assertAlmostEqual(result.risk_score, 0.85)
 
-    @patch("transactions.services.call_ml_scoring_service")
-    def test_score_transaction_ml_down_failsafe(self, mock_call):
-        mock_call.side_effect = services.ScoringServiceError("Connection refused")
+    @patch("transactions.services._tier2_groq", return_value=None)
+    @patch("transactions.services._tier1_local_pkl", return_value=None)
+    def test_score_transaction_ml_down_failsafe(self, mock_tier1, mock_tier2):
         transaction = Transaction.objects.create(
             user_id=str(self.user.id),
             recipient="test",
@@ -94,8 +94,8 @@ class ServicesTest(TestCase):
             services.apply_user_decision(transaction, "confirm")
 
     def test_score_transaction_creates_ledger_entry(self):
-        with patch("transactions.services.call_ml_scoring_service") as mock_call:
-            mock_call.return_value = {"risk_score": 0.3, "reason": "All good"}
+        with patch("transactions.services._tier1_local_pkl") as mock_tier1:
+            mock_tier1.return_value = {"risk_score": 0.3, "reason": "All good"}
             transaction = Transaction.objects.create(
                 user_id=str(self.user.id),
                 recipient="test",
@@ -114,8 +114,8 @@ class TransactionAPITest(TestCase):
         self.client.force_authenticate(user=self.user)
 
     def test_create_transaction_success(self):
-        with patch("transactions.services.call_ml_scoring_service") as mock_call:
-            mock_call.return_value = {"risk_score": 0.2, "reason": "Low risk"}
+        with patch("transactions.services._tier1_local_pkl") as mock_tier1:
+            mock_tier1.return_value = {"risk_score": 0.2, "reason": "Low risk"}
             data = {"recipient": "someone", "amount": "5000.00", "device_id": "device_1"}
             response = self.client.post("/api/transactions/", data, format="json")
             self.assertEqual(response.status_code, status.HTTP_201_CREATED)

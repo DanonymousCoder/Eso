@@ -116,3 +116,10 @@ CORS_ALLOWED_ORIGINS = [
     ).split(",")
     if origin.strip()
 ]
+
+# --- AI features ---
+# Groq API for advanced transaction reasoning.
+# Get a free key at https://console.groq.com
+GROQ_API_KEY = config("GROQ_API_KEY", default="")
+GROQ_MODEL = config("GROQ_MODEL", default="llama-3.3-70b-versatile")
+GROQ_TIMEOUT_SECONDS = config("GROQ_TIMEOUT_SECONDS", default=10, cast=int)

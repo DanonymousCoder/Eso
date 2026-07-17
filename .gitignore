@@ -56,6 +56,10 @@ node_modules/
 # Pre-commit
 .pre-commit-config.yaml
 
+# ML models
+*.pkl
+*.joblib
+
 # Git hooks
 .git/hooks/
 
