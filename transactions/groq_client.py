@@ -7,22 +7,51 @@ logger = logging.getLogger(__name__)
 
 
 def _build_analysis_prompt(transaction, baseline):
+    known_recipients = baseline.typical_recipients or []
+    is_new = transaction.recipient not in known_recipients
+    recipient_context = (
+        f"UNKNOWN — '{transaction.recipient}' has NEVER been paid before"
+        if is_new
+        else f"KNOWN — '{transaction.recipient}' is in the user's approved list"
+    )
+    amount = float(transaction.amount)
+    lo = float(baseline.typical_amount_min)
+    hi = float(baseline.typical_amount_max)
+    amount_context = (
+        f"₦{amount:,.0f} (OUTSIDE typical range ₦{lo:,.0f}–₦{hi:,.0f})"
+        if amount < lo or amount > hi
+        else f"₦{amount:,.0f} (within typical range ₦{lo:,.0f}–₦{hi:,.0f})"
+    )
+    hour = transaction.created_at.hour if transaction.created_at else "Unknown"
+    typical_hours = baseline.typical_hours or list(range(7, 22))
+    hour_context = (
+        f"{hour}:00 (OUTSIDE usual hours {min(typical_hours)}:00–{max(typical_hours)}:00)"
+        if isinstance(hour, int) and hour not in typical_hours
+        else f"{hour}:00 (within usual active hours)"
+    )
     return f"""You are Eso, an AI transaction guardian for a Nigerian bank. Analyze this transaction for fraud risk.
 
-Transaction details:
-- Recipient: {transaction.recipient}
-- Amount: ₦{transaction.amount}
-- Device ID: {transaction.device_id or "Not provided"}
-- Hour: {transaction.created_at.hour if transaction.created_at else "Unknown"}
+TRANSACTION DATA:
+- Recipient: {recipient_context}
+- Amount: {amount_context}
+- Device: {"NEW device not seen before" if transaction.device_id and transaction.device_id not in (baseline.known_devices or []) else "Recognised device"}
+- Time: {hour_context}
+- Total known recipients: {len(known_recipients)}
 
-User's behavioral baseline:
-- Typical recipients: {baseline.typical_recipients or "None yet"}
-- Typical amount range: ₦{baseline.typical_amount_min} - ₦{baseline.typical_amount_max}
-- Typical hours: {baseline.typical_hours}
-- Known devices: {baseline.known_devices or "None yet"}
+NIGERIAN FRAUD PATTERNS TO CHECK:
+- SIM swap urgency (unknown recipient + large amount)
+- Late-night large wires (post 22:00)
+- New device + high amount = session hijack signal
+- Amounts far above baseline = account takeover pattern
 
-Respond in this exact JSON format:
-{{"risk_score": <0.0 to 1.0>, "reason": "<1-2 sentence explanation>", "red_flags": ["<specific concern>", ...], "suggested_action": "<approve | flag | block>"}}"""
+INSTRUCTIONS:
+- Be SPECIFIC: mention the actual amount, recipient name, and hour in your reason.
+- Do NOT say "the recipient is unknown" generically — say WHO the recipient is and WHY it is suspicious or safe.
+- For approved transactions, explain WHY it looks normal (e.g. amount is within range, recipient is known).
+- Reason must be 1-2 sentences max, plain English a bank customer can understand.
+
+Respond ONLY in this exact JSON format:
+{{"risk_score": <0.0 to 1.0>, "reason": "<specific 1-2 sentence explanation with real values>", "red_flags": ["<specific concern with values>"], "suggested_action": "<approve | flag | block>"}}"""
 
 
 def analyze_transaction(transaction, baseline):

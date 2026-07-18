@@ -55,20 +55,45 @@ def heuristic_risk_score(transaction, baseline, recent_count=0):
     return score
 
 
-def _generate_reason(score, features):
+def _generate_reason(score, features, transaction=None, baseline=None):
     reasons = []
     if features["amount_ratio"] > 0.6:
-        reasons.append("Amount significantly outside typical range")
+        if transaction and baseline:
+            amount = float(transaction.amount)
+            lo = float(baseline.typical_amount_min)
+            hi = float(baseline.typical_amount_max)
+            reasons.append(
+                f"Transfer of \u20a6{amount:,.0f} is well outside your typical range "
+                f"(\u20a6{lo:,.0f}\u2013\u20a6{hi:,.0f})"
+            )
+        else:
+            reasons.append("Transfer amount is well outside your typical range")
     if features["new_recipient"] > 0.5:
-        reasons.append("New/unusual recipient")
+        if transaction:
+            reasons.append(
+                f"'{transaction.recipient}' has not appeared in your previous approved transfers"
+            )
+        else:
+            reasons.append("Recipient is not in your known contacts")
     if features["unusual_hour"] > 0.5:
-        reasons.append("Transaction outside typical hours")
+        from datetime import datetime, timezone
+        hour = datetime.now(timezone.utc).hour
+        period = "night" if hour < 6 or hour >= 22 else "early morning" if hour < 9 else "late evening"
+        reasons.append(
+            f"Transfer initiated at {hour:02d}:00 UTC, outside your usual active hours ({period})"
+        )
     if features["new_device"] > 0.5:
-        reasons.append("Unrecognized device")
+        reasons.append("Request came from a browser or device not seen in your recent sessions")
     if features["amount_velocity"] > 0.5:
-        reasons.append("Unusual transaction frequency")
+        reasons.append("You have made an unusually high number of transfers recently")
     if not reasons:
-        reasons.append("Routine transaction")
+        if transaction:
+            reasons.append(
+                f"Transfer of \u20a6{float(transaction.amount):,.0f} to '{transaction.recipient}' "
+                f"matches your usual pattern — recipient known, amount normal, timing typical"
+            )
+        else:
+            reasons.append("This transfer matches your usual spending behaviour")
     return "; ".join(reasons)
 
 
@@ -100,7 +125,7 @@ class RiskModel:
         else:
             score = heuristic_risk_score(transaction, baseline, recent_count)
 
-        reason = _generate_reason(score, features)
+        reason = _generate_reason(score, features, transaction=transaction, baseline=baseline)
         return {"risk_score": round(score, 4), "reason": reason}
 
     def is_loaded(self):

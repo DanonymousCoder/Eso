@@ -159,20 +159,25 @@ def _tier3_external_ml(transaction, baseline) -> dict:
 def score_transaction(transaction: Transaction) -> Transaction:
     baseline = get_or_create_baseline(transaction.user_id)
 
-    result = _tier1_local_pkl(transaction, baseline)
+    # Tier 1: fast local heuristic/pkl (always runs — gives us a score immediately)
+    tier1 = _tier1_local_pkl(transaction, baseline)
 
-    if result and result["risk_score"] >= RISK_THRESHOLD:
-        groq_result = _tier2_groq(transaction, baseline)
-        if groq_result:
-            result = groq_result
+    # Tier 2: Groq LLM — runs for EVERY transaction to get real, specific reasoning.
+    # We always try Groq so approved transactions don't get generic messages either.
+    groq_result = _tier2_groq(transaction, baseline)
 
-    if result is None:
-        try:
-            result = _tier2_groq(transaction, baseline)
-        except Exception:
-            result = None
-
-    if result is None:
+    if groq_result:
+        # Use Groq's score if it agrees directionally, otherwise blend: Groq
+        # reasoning with the fast tier-1 score as a sanity anchor.
+        result = groq_result
+        if tier1 and abs(groq_result["risk_score"] - tier1["risk_score"]) > 0.35:
+            # Large disagreement — average them to avoid runaway LLM scores
+            blended = (groq_result["risk_score"] + tier1["risk_score"]) / 2
+            result = {**groq_result, "risk_score": round(blended, 4)}
+    elif tier1:
+        result = tier1
+    else:
+        # Both tier 1 and Groq failed — fall through to external ML
         try:
             result = _tier3_external_ml(transaction, baseline)
         except ScoringServiceError:
@@ -189,9 +194,12 @@ def score_transaction(transaction: Transaction) -> Transaction:
     )
     transaction.save()
 
-    source = "pkl" if risk_model.is_loaded() else "heuristic"
-    if result.get("red_flags"):
+    if groq_result:
         source = "groq"
+    elif risk_model.is_loaded():
+        source = "pkl"
+    else:
+        source = "heuristic"
 
     LedgerEntry.objects.create(
         user_id=transaction.user_id,
