@@ -310,7 +310,7 @@ function Analysis({ progress, cancel }) {
 }
 
 function reasonList(reason = '') {
-  const parts = reason.split(/[,.;]\s*/).filter((part) => part.length > 3)
+  const parts = reason.split(/[.;]\s*/).filter((part) => part.length > 3)
   return parts.length ? parts.slice(0, 3) : ['This transfer differs from your usual behaviour.']
 }
 
