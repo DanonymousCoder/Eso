@@ -66,6 +66,10 @@ export const api = {
     return result.user
   },
   me: () => request('/auth/me/'),
+  paymentPinStatus: () => request('/auth/payment-pin/'),
+  setPaymentPin: (details) => request('/auth/payment-pin/', {
+    method: 'POST', body: JSON.stringify(details),
+  }),
   baseline: () => request('/me/baseline/'),
   ledger: () => request('/me/ledger/'),
   transaction: (id) => request(`/transactions/${id}/`),

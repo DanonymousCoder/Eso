@@ -22,3 +22,14 @@ class UserSerializer(serializers.ModelSerializer):
     class Meta:
         model = User
         fields = ["id", "username", "email", "is_staff"]
+
+
+class PaymentPinSetSerializer(serializers.Serializer):
+    current_password = serializers.CharField(write_only=True)
+    pin = serializers.RegexField(regex=r"^\d{4}$", write_only=True)
+    pin_confirmation = serializers.RegexField(regex=r"^\d{4}$", write_only=True)
+
+    def validate(self, attrs):
+        if attrs["pin"] != attrs["pin_confirmation"]:
+            raise serializers.ValidationError({"pin_confirmation": "The payment PINs do not match."})
+        return attrs

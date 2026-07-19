@@ -217,7 +217,9 @@ function csvEscape(value) {
 
 function SendMoney() {
   const navigate = useNavigate(); const [stage, setStage] = useState('form'); const [transaction, setTransaction] = useState(null)
-  const [form, setForm] = useState({ recipient: '', bank: '', account: '', amount: '', description: '' }); const [error, setError] = useState(''); const [progress, setProgress] = useState(0)
+  const [form, setForm] = useState({ recipient: '', bank: '', account: '', amount: '', description: '', paymentPin: '' }); const [error, setError] = useState(''); const [progress, setProgress] = useState(0)
+  const [pinStatus, setPinStatus] = useState(null)
+  useEffect(() => { api.paymentPinStatus().then(setPinStatus).catch(() => {}) }, [])
   const update = (key) => (event) => setForm((value) => ({ ...value, [key]: event.target.value }))
   const applyScenario = (scenario) => {
     setForm({
@@ -226,6 +228,7 @@ function SendMoney() {
       account: scenario.account,
       amount: scenario.amount,
       description: scenario.description,
+      paymentPin: '',
     })
     setError('')
   }
@@ -239,6 +242,7 @@ function SendMoney() {
         recipient_bank: form.bank,
         amount: Number(form.amount),
         description: form.description,
+        payment_pin: form.paymentPin,
         device_id: navigator.userAgent.slice(0, 150),
       })
       setTransaction(result); setProgress(100); await new Promise((resolve) => setTimeout(resolve, 450)); setStage(result.status === 'flagged' ? 'flagged' : 'approved')
@@ -254,7 +258,7 @@ function SendMoney() {
     try { const result = await api.requestSecurityReview(transaction.id); setTransaction(result); setStage('review') }
     catch (err) { setError(err.message); setStage('flagged') }
   }
-  const reset = () => { setTransaction(null); setForm({ recipient: '', bank: '', account: '', amount: '', description: '' }); setStage('form'); setProgress(0) }
+  const reset = () => { setTransaction(null); setForm({ recipient: '', bank: '', account: '', amount: '', description: '', paymentPin: '' }); setStage('form'); setProgress(0) }
   if (stage === 'analysing') return <Analysis progress={progress} cancel={() => setStage(transaction ? 'flagged' : 'form')} />
   if (stage === 'flagged') return <Intervention transaction={transaction} onTransaction={setTransaction} onConfirm={() => decide('confirm')} onCancel={() => decide('cancel')} onRequestReview={requestReview} error={error} />
   if (stage === 'review') return <ReviewHold transaction={transaction} onCancel={() => decide('cancel')} onLedger={() => navigate('/ledger')} />
@@ -286,8 +290,11 @@ function SendMoney() {
         <div className="form-step"><span>2</span><div><b>Transfer details</b><small>How much would you like to send?</small></div></div>
         <label>Amount (NGN)<div className="money-input"><span>₦</span><input required min="100" step="100" type="number" value={form.amount} onChange={update('amount')} placeholder="0.00" /></div><small className="balance">Demo balance · ₦1,240,500.00</small></label>
         <label>Description <i>Optional</i><input value={form.description} onChange={update('description')} placeholder="What is this transfer for?" /></label>
+        <hr />
+        <div className="form-step"><span>3</span><div><b>Authorize payment</b><small>Confirm this transfer with your four-digit payment PIN.</small></div></div>
+        {pinStatus && !pinStatus.has_pin ? <div className="pin-required"><LockKeyhole /><span><b>Payment PIN required</b><small>Set your PIN before making your first transfer.</small></span><Link className="button secondary" to="/settings">Set PIN</Link></div> : <label>Payment PIN<input required type="password" inputMode="numeric" pattern="[0-9]{4}" maxLength="4" autoComplete="off" value={form.paymentPin} onChange={update('paymentPin')} placeholder="••••" /></label>}
         {error && <div className="form-error"><TriangleAlert size={17} />{error}</div>}
-        <button className="button primary full" type="submit">Review with Eso <ArrowRight size={18} /></button>
+        <button className="button primary full" type="submit" disabled={pinStatus && !pinStatus.has_pin}>Review with Eso <ArrowRight size={18} /></button>
       </form>
       <aside className="transfer-aside"><div className="guardian-visual"><span><ShieldCheck /></span><i className="orbit o1" /><i className="orbit o2" /></div><span className="eyebrow">ESO GUARDIAN</span><h2>Built for Nigerian banking fraud patterns.</h2><p>Eso learns your GTBank, Opay, and UBA habits — then challenges SIM-swap urgency, late-night wires, and unknown beneficiaries before money leaves.</p><div className="aside-points"><span><Check /> Learns recipients after safe transfers</span><span><Check /> Flags SIM swap &amp; odd-hour patterns</span><span><Check /> Every decision recorded in ₦</span></div></aside>
     </section>
@@ -471,13 +478,28 @@ function SecurityReviews() {
 
 function SettingsPage() {
   const { user, logout } = useAuth(); const [baseline, setBaseline] = useState(null); const [level, setLevel] = useState(localStorage.getItem('eso_protection') || 'guardian'); const [prefs, setPrefs] = useState({ anomalies: true, weekly: true, routine: false }); const [dark, setDark] = useState(document.documentElement.dataset.theme === 'dark')
+  const [pinStatus, setPinStatus] = useState(null)
+  const [pinForm, setPinForm] = useState({ current_password: '', pin: '', pin_confirmation: '' })
+  const [pinMessage, setPinMessage] = useState('')
+  const [pinBusy, setPinBusy] = useState(false)
   useEffect(() => { api.baseline().then(setBaseline).catch(() => {}) }, [])
+  useEffect(() => { api.paymentPinStatus().then(setPinStatus).catch(() => {}) }, [])
   const chooseLevel = (next) => { setLevel(next); localStorage.setItem('eso_protection', next) }
   const toggleDark = () => { const next = !dark; setDark(next); document.documentElement.dataset.theme = next ? 'dark' : ''; localStorage.setItem('eso_theme', next ? 'dark' : 'light') }
+  const updatePin = (key) => (event) => setPinForm((current) => ({ ...current, [key]: event.target.value }))
+  const savePin = async (event) => {
+    event.preventDefault(); setPinBusy(true); setPinMessage('')
+    try {
+      const result = await api.setPaymentPin(pinForm)
+      setPinStatus(result); setPinForm({ current_password: '', pin: '', pin_confirmation: '' })
+      setPinMessage(pinStatus?.has_pin ? 'Payment PIN changed successfully.' : 'Payment PIN created successfully.')
+    } catch (err) { setPinMessage(err.message) } finally { setPinBusy(false) }
+  }
   return <>
     <PageHeading eyebrow="PREFERENCES" title="Settings" copy="Manage your profile, guardian behaviour and notifications." />
     <div className="settings-grid">
       <section className="card settings-card"><div className="settings-title"><span><UserRound /></span><div><h2>Profile information</h2><p>Your Eso account and protection status.</p></div></div><div className="profile-row"><span className="avatar large">{user.username[0].toUpperCase()}</span><div><span className="status-dot safe">FULLY VERIFIED</span><h3>{user.username}</h3><p>{user.email || 'No email supplied'}</p></div></div></section>
+      <section className="card settings-card"><div className="settings-title"><span><LockKeyhole /></span><div><h2>Payment PIN</h2><p>{pinStatus?.has_pin ? 'Change the PIN used to authorize transfers.' : 'Create a PIN before making your first transfer.'}</p></div></div><form className="pin-settings-form" onSubmit={savePin}><label>Account password<input required type="password" autoComplete="current-password" value={pinForm.current_password} onChange={updatePin('current_password')} placeholder="Confirm your identity" /></label><div><label>New four-digit PIN<input required type="password" inputMode="numeric" pattern="[0-9]{4}" maxLength="4" autoComplete="new-password" value={pinForm.pin} onChange={updatePin('pin')} placeholder="••••" /></label><label>Confirm PIN<input required type="password" inputMode="numeric" pattern="[0-9]{4}" maxLength="4" autoComplete="new-password" value={pinForm.pin_confirmation} onChange={updatePin('pin_confirmation')} placeholder="••••" /></label></div>{pinMessage && <div className={pinMessage.includes('successfully') ? 'pin-success' : 'form-error'}>{pinMessage}</div>}<button className="button primary full" disabled={pinBusy}>{pinBusy ? <LoaderCircle className="spin" size={17} /> : <LockKeyhole size={17} />}{pinStatus?.has_pin ? 'Change payment PIN' : 'Create payment PIN'}</button></form></section>
       <section className="card settings-card span-2"><div className="settings-title"><span><Shield /></span><div><h2>AI security protocol</h2><p>Choose how assertively Eso monitors unusual behaviour.</p></div></div><div className="protection-levels">{[['standard','Standard','Known malicious patterns only.'],['guardian','Guardian','Recommended. Learns your habits and challenges anomalies.'],['maximum','Maximum','Every new recipient requires review.']].map(([value,title,copy]) => <button key={value} className={level === value ? 'active' : ''} onClick={() => chooseLevel(value)}><span>{level === value && <Check />}</span><b>{title}</b><p>{copy}</p></button>)}</div><div className="baseline-line"><span><b>Behaviour profile</b><small>{baseline ? `${baseline.typical_recipients.length} known recipients · typical range ${compactNaira.format(baseline.typical_amount_min)} – ${compactNaira.format(baseline.typical_amount_max)} · updates after safe transfers` : 'Loading learned baseline…'}</small></span><BrainCircuit /></div></section>
       <section className="card settings-card span-2"><div className="settings-title"><span><Bell /></span><div><h2>AI notifications</h2><p>Control when the guardian communicates with you.</p></div></div>{[['anomalies','Anomaly alerts','Unusual spending patterns and high-risk transfers.'],['weekly','Weekly protection summary','A concise report of activity and interventions.'],['routine','Routine confirmations','Notifications for normal, recurring transfers.']].map(([key,title,copy]) => <div className="toggle-row" key={key}><span><b>{title}</b><small>{copy}</small></span><button className={`toggle ${prefs[key] ? 'on' : ''}`} onClick={() => setPrefs((p) => ({ ...p, [key]: !p[key] }))}><i /></button></div>)}</section>
       <section className="card setting-action"><span className="settings-action-icon"><Download /></span><h3>Transparency records</h3><p>Your full decision history is available from the ledger.</p><a className="button primary full" href="/ledger">Open ledger</a></section>

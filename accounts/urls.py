@@ -7,4 +7,5 @@ urlpatterns = [
     path("auth/login/", TokenObtainPairView.as_view()),  # returns access + refresh
     path("auth/refresh/", TokenRefreshView.as_view()),
     path("auth/me/", views.MeView.as_view()),
+    path("auth/payment-pin/", views.PaymentPinView.as_view()),
 ]

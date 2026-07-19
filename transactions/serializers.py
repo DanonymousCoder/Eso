@@ -30,6 +30,8 @@ class TransactionCreateSerializer(serializers.ModelSerializer):
     valid token could submit transactions under someone else's user_id.
     """
 
+    payment_pin = serializers.RegexField(regex=r"^\d{4}$", write_only=True)
+
     class Meta:
         model = Transaction
         fields = [
@@ -40,8 +42,13 @@ class TransactionCreateSerializer(serializers.ModelSerializer):
             "amount",
             "description",
             "device_id",
+            "payment_pin",
         ]
         read_only_fields = ["id"]
+
+    def create(self, validated_data):
+        validated_data.pop("payment_pin", None)
+        return super().create(validated_data)
 
 
 class SecurityReviewSerializer(serializers.ModelSerializer):

@@ -8,6 +8,7 @@ from rest_framework import status
 
 from .models import Transaction, LedgerEntry, RecipientReport, SecurityReview
 from . import services
+from accounts import services as account_services
 
 
 class ServicesTest(TestCase):
@@ -338,12 +339,16 @@ class TransactionAPITest(TestCase):
     def setUp(self):
         self.client = APIClient()
         self.user = User.objects.create_user(username="testuser", password="testpass123")
+        account_services.set_payment_pin(self.user, "testpass123", "2580")
         self.client.force_authenticate(user=self.user)
 
     def test_create_transaction_success(self):
         with patch("transactions.services._tier1_local_pkl") as mock_tier1:
             mock_tier1.return_value = {"risk_score": 0.2, "reason": "Low risk"}
-            data = {"recipient": "someone", "amount": "5000.00", "device_id": "device_1"}
+            data = {
+                "recipient": "someone", "amount": "5000.00",
+                "device_id": "device_1", "payment_pin": "2580",
+            }
             response = self.client.post("/api/transactions/", data, format="json")
             self.assertEqual(response.status_code, status.HTTP_201_CREATED)
             self.assertIn("id", response.data)
@@ -354,6 +359,30 @@ class TransactionAPITest(TestCase):
         data = {"recipient": "someone", "amount": "5000.00"}
         response = self.client.post("/api/transactions/", data, format="json")
         self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_create_transaction_rejects_wrong_payment_pin(self):
+        response = self.client.post(
+            "/api/transactions/",
+            {"recipient": "someone", "amount": "5000.00", "payment_pin": "2581"},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("Incorrect payment PIN", response.data["detail"])
+        self.assertEqual(Transaction.objects.count(), 0)
+
+    def test_create_transaction_requires_pin_setup(self):
+        user_without_pin = User.objects.create_user(
+            username="no-pin", password="testpass123"
+        )
+        self.client.force_authenticate(user=user_without_pin)
+        response = self.client.post(
+            "/api/transactions/",
+            {"recipient": "someone", "amount": "5000.00", "payment_pin": "2580"},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("Set a payment PIN", response.data["detail"])
+        self.assertEqual(Transaction.objects.count(), 0)
 
     def test_get_transaction_detail(self):
         transaction = Transaction.objects.create(

@@ -9,6 +9,7 @@ in a transparency ledger.
 The frontend lives in `src/` and covers the complete hackathon demonstration:
 
 - authenticated sign-in and registration;
+- hashed four-digit payment PIN authorization with failed-attempt lockout;
 - responsive guardian dashboard;
 - simulated Nigerian bank transfer form;
 - live API-backed transaction analysis;
@@ -73,8 +74,9 @@ not scattered logic across every view.
 | POST | `/api/auth/login/` | No | Log in, returns access + refresh tokens |
 | POST | `/api/auth/refresh/` | No | Exchange a refresh token for a new access token |
 | GET | `/api/auth/me/` | Yes | Confirm which user a token belongs to |
+| GET/POST | `/api/auth/payment-pin/` | Yes | Read PIN status or create/change the hashed payment PIN |
 | GET | `/api/me/baseline/` | Yes | Get (or auto-create) the current user's behavioral baseline |
-| POST | `/api/transactions/` | Yes | Submit a transaction — scores it immediately, returns approved/flagged |
+| POST | `/api/transactions/` | Yes | Verify the payment PIN, then submit and score a transaction |
 | GET | `/api/transactions/<id>/` | Yes | Fetch a transaction's current state (owner only) |
 | POST | `/api/transactions/<id>/reflection/` | Yes | Record the required reflection response and escalate coached-payment language |
 | POST | `/api/transactions/<id>/report/` | Yes | Report the beneficiary to the shared recipient-risk registry |

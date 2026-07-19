@@ -4,6 +4,7 @@ from rest_framework.response import Response
 from rest_framework import status
 from rest_framework.exceptions import PermissionDenied
 from rest_framework.permissions import IsAdminUser
+from accounts import services as account_services
 
 from .models import Transaction, LedgerEntry
 from .serializers import (
@@ -42,6 +43,12 @@ class TransactionCreateView(APIView):
     def post(self, request):
         serializer = TransactionCreateSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
+        try:
+            account_services.verify_payment_pin(
+                request.user, serializer.validated_data["payment_pin"]
+            )
+        except account_services.PaymentPinError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
         transaction = serializer.save(user_id=str(request.user.id))
 
         transaction = services.score_transaction(transaction)

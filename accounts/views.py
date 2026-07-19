@@ -4,7 +4,8 @@ from rest_framework.response import Response
 from rest_framework import status
 from rest_framework_simplejwt.tokens import RefreshToken
 
-from .serializers import RegisterSerializer, UserSerializer
+from .serializers import RegisterSerializer, UserSerializer, PaymentPinSetSerializer
+from . import services
 
 
 class RegisterView(APIView):
@@ -40,3 +41,23 @@ class MeView(APIView):
 
     def get(self, request):
         return Response(UserSerializer(request.user).data)
+
+
+class PaymentPinView(APIView):
+    """GET PIN status; POST creates or changes a PIN after password confirmation."""
+
+    def get(self, request):
+        return Response(services.payment_pin_status(request.user))
+
+    def post(self, request):
+        serializer = PaymentPinSetSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        try:
+            services.set_payment_pin(
+                user=request.user,
+                current_password=serializer.validated_data["current_password"],
+                pin=serializer.validated_data["pin"],
+            )
+        except services.PaymentPinError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        return Response(services.payment_pin_status(request.user))
