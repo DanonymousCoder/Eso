@@ -1,4 +1,4 @@
-import { createContext, useContext, useEffect, useMemo, useState } from 'react'
+import { createContext, useContext, useEffect, useMemo, useRef, useState } from 'react'
 import { Link, Navigate, Route, Routes, useLocation, useNavigate } from 'react-router-dom'
 import {
   ArrowLeft, ArrowRight, Bell, BrainCircuit, Check, CheckCircle2, ChevronDown, ClipboardCheck,
@@ -168,6 +168,43 @@ function ActivityRow({ transaction: t }) { const meta = statusMap[t.status] || s
 function EmptyState({ icon: Icon, title, copy, action, href }) { return <div className="empty"><span><Icon /></span><h3>{title}</h3><p>{copy}</p>{action && <a className="button secondary" href={href}>{action}</a>}</div> }
 function StatusPill({ status }) { const meta = statusMap[status] || statusMap.pending; return <span className={`pill ${meta.tone}`}>{meta.label}</span> }
 
+function PaymentPinModal({ onClose, onConfirm, busy = false, error = '' }) {
+  const [digits, setDigits] = useState(['', '', '', ''])
+  const inputs = useRef([])
+  useEffect(() => {
+    inputs.current[0]?.focus()
+    const closeOnEscape = (event) => { if (event.key === 'Escape' && !busy) onClose() }
+    window.addEventListener('keydown', closeOnEscape)
+    return () => window.removeEventListener('keydown', closeOnEscape)
+  }, [busy, onClose])
+  useEffect(() => {
+    if (!error) return
+    setDigits(['', '', '', ''])
+    window.setTimeout(() => inputs.current[0]?.focus(), 0)
+  }, [error])
+  const updateDigit = (index, value) => {
+    const digit = value.replace(/\D/g, '').slice(-1)
+    setDigits((current) => current.map((item, itemIndex) => itemIndex === index ? digit : item))
+    if (digit && index < 3) inputs.current[index + 1]?.focus()
+  }
+  const handleKeyDown = (index, event) => {
+    if (event.key === 'Backspace' && !digits[index] && index > 0) inputs.current[index - 1]?.focus()
+    if (event.key === 'ArrowLeft' && index > 0) inputs.current[index - 1]?.focus()
+    if (event.key === 'ArrowRight' && index < 3) inputs.current[index + 1]?.focus()
+  }
+  const handlePaste = (event) => {
+    const value = event.clipboardData.getData('text').replace(/\D/g, '').slice(0, 4)
+    if (!value) return
+    event.preventDefault()
+    const next = Array.from({ length: 4 }, (_, index) => value[index] || '')
+    setDigits(next)
+    inputs.current[Math.min(value.length, 4) - 1]?.focus()
+  }
+  const pin = digits.join('')
+  const submit = (event) => { event.preventDefault(); if (pin.length === 4 && !busy) onConfirm(pin) }
+  return <div className="pin-modal-backdrop" role="presentation"><section className="pin-modal" role="dialog" aria-modal="true" aria-labelledby="pin-modal-title"><button type="button" className="pin-modal-close" aria-label="Close payment PIN" disabled={busy} onClick={onClose}><X size={19} /></button><span className="pin-modal-icon"><LockKeyhole /></span><span className="eyebrow muted">PAYMENT AUTHORIZATION</span><h2 id="pin-modal-title">Enter your payment PIN</h2><p>Confirm this transfer with your four-digit PIN.</p><form onSubmit={submit}><div className="pin-boxes" onPaste={handlePaste}>{digits.map((digit, index) => <input key={index} ref={(node) => { inputs.current[index] = node }} aria-label={`Payment PIN digit ${index + 1}`} type="password" inputMode="numeric" pattern="[0-9]" maxLength="1" autoComplete="off" value={digit} disabled={busy} onChange={(event) => updateDigit(index, event.target.value)} onKeyDown={(event) => handleKeyDown(index, event)} />)}</div>{error && <div className="form-error"><TriangleAlert size={17} />{error}</div>}<button className="button primary full" disabled={pin.length !== 4 || busy}>{busy ? <LoaderCircle className="spin" size={17} /> : <LockKeyhole size={17} />}Authorize and analyse</button></form><Link to="/settings" className="pin-help" onClick={onClose}>Forgot or need to change your PIN?</Link></section></div>
+}
+
 const banks = ['Access Bank', 'First Bank of Nigeria', 'Guaranty Trust Bank', 'Kuda Bank', 'Opay', 'PalmPay', 'United Bank for Africa', 'Zenith Bank']
 
 const DEMO_SCENARIOS = [
@@ -217,8 +254,11 @@ function csvEscape(value) {
 
 function SendMoney() {
   const navigate = useNavigate(); const [stage, setStage] = useState('form'); const [transaction, setTransaction] = useState(null)
-  const [form, setForm] = useState({ recipient: '', bank: '', account: '', amount: '', description: '', paymentPin: '' }); const [error, setError] = useState(''); const [progress, setProgress] = useState(0)
+  const [form, setForm] = useState({ recipient: '', bank: '', account: '', amount: '', description: '' }); const [error, setError] = useState(''); const [progress, setProgress] = useState(0)
   const [pinStatus, setPinStatus] = useState(null)
+  const [pinModalOpen, setPinModalOpen] = useState(false)
+  const [pinError, setPinError] = useState('')
+  const [pinBusy, setPinBusy] = useState(false)
   useEffect(() => { api.paymentPinStatus().then(setPinStatus).catch(() => {}) }, [])
   const update = (key) => (event) => setForm((value) => ({ ...value, [key]: event.target.value }))
   const applyScenario = (scenario) => {
@@ -228,12 +268,14 @@ function SendMoney() {
       account: scenario.account,
       amount: scenario.amount,
       description: scenario.description,
-      paymentPin: '',
     })
     setError('')
   }
-  const submit = async (event) => {
-    event.preventDefault(); setError(''); setStage('analysing'); setProgress(12)
+  const submit = (event) => {
+    event.preventDefault(); setError(''); setPinError(''); setPinModalOpen(true)
+  }
+  const authorizeTransfer = async (paymentPin) => {
+    setPinBusy(true); setPinError(''); setProgress(12)
     const timer = window.setInterval(() => setProgress((p) => Math.min(p + 17, 89)), 280)
     try {
       const result = await api.createTransaction({
@@ -242,11 +284,11 @@ function SendMoney() {
         recipient_bank: form.bank,
         amount: Number(form.amount),
         description: form.description,
-        payment_pin: form.paymentPin,
+        payment_pin: paymentPin,
         device_id: navigator.userAgent.slice(0, 150),
       })
-      setTransaction(result); setProgress(100); await new Promise((resolve) => setTimeout(resolve, 450)); setStage(result.status === 'flagged' ? 'flagged' : 'approved')
-    } catch (err) { setError(err.message); setStage('form') } finally { clearInterval(timer) }
+      setPinModalOpen(false); setStage('analysing'); setTransaction(result); setProgress(100); await new Promise((resolve) => setTimeout(resolve, 450)); setStage(result.status === 'flagged' ? 'flagged' : 'approved')
+    } catch (err) { setPinError(err.message) } finally { clearInterval(timer); setPinBusy(false) }
   }
   const decide = async (decision) => {
     setStage('analysing'); setProgress(92)
@@ -258,7 +300,7 @@ function SendMoney() {
     try { const result = await api.requestSecurityReview(transaction.id); setTransaction(result); setStage('review') }
     catch (err) { setError(err.message); setStage('flagged') }
   }
-  const reset = () => { setTransaction(null); setForm({ recipient: '', bank: '', account: '', amount: '', description: '', paymentPin: '' }); setStage('form'); setProgress(0) }
+  const reset = () => { setTransaction(null); setForm({ recipient: '', bank: '', account: '', amount: '', description: '' }); setStage('form'); setProgress(0); setPinModalOpen(false); setPinError('') }
   if (stage === 'analysing') return <Analysis progress={progress} cancel={() => setStage(transaction ? 'flagged' : 'form')} />
   if (stage === 'flagged') return <Intervention transaction={transaction} onTransaction={setTransaction} onConfirm={() => decide('confirm')} onCancel={() => decide('cancel')} onRequestReview={requestReview} error={error} />
   if (stage === 'review') return <ReviewHold transaction={transaction} onCancel={() => decide('cancel')} onLedger={() => navigate('/ledger')} />
@@ -290,14 +332,13 @@ function SendMoney() {
         <div className="form-step"><span>2</span><div><b>Transfer details</b><small>How much would you like to send?</small></div></div>
         <label>Amount (NGN)<div className="money-input"><span>₦</span><input required min="100" step="100" type="number" value={form.amount} onChange={update('amount')} placeholder="0.00" /></div><small className="balance">Demo balance · ₦1,240,500.00</small></label>
         <label>Description <i>Optional</i><input value={form.description} onChange={update('description')} placeholder="What is this transfer for?" /></label>
-        <hr />
-        <div className="form-step"><span>3</span><div><b>Authorize payment</b><small>Confirm this transfer with your four-digit payment PIN.</small></div></div>
-        {pinStatus && !pinStatus.has_pin ? <div className="pin-required"><LockKeyhole /><span><b>Payment PIN required</b><small>Set your PIN before making your first transfer.</small></span><Link className="button secondary" to="/settings">Set PIN</Link></div> : <label>Payment PIN<input required type="password" inputMode="numeric" pattern="[0-9]{4}" maxLength="4" autoComplete="off" value={form.paymentPin} onChange={update('paymentPin')} placeholder="••••" /></label>}
+        {pinStatus && !pinStatus.has_pin && <div className="pin-required"><LockKeyhole /><span><b>Payment PIN required</b><small>Set your PIN before making your first transfer.</small></span><Link className="button secondary" to="/settings">Set PIN</Link></div>}
         {error && <div className="form-error"><TriangleAlert size={17} />{error}</div>}
-        <button className="button primary full" type="submit" disabled={pinStatus && !pinStatus.has_pin}>Review with Eso <ArrowRight size={18} /></button>
+        <button className="button primary full" type="submit" disabled={!pinStatus || !pinStatus.has_pin}>Continue securely <ArrowRight size={18} /></button>
       </form>
       <aside className="transfer-aside"><div className="guardian-visual"><span><ShieldCheck /></span><i className="orbit o1" /><i className="orbit o2" /></div><span className="eyebrow">ESO GUARDIAN</span><h2>Built for Nigerian banking fraud patterns.</h2><p>Eso learns your GTBank, Opay, and UBA habits — then challenges SIM-swap urgency, late-night wires, and unknown beneficiaries before money leaves.</p><div className="aside-points"><span><Check /> Learns recipients after safe transfers</span><span><Check /> Flags SIM swap &amp; odd-hour patterns</span><span><Check /> Every decision recorded in ₦</span></div></aside>
     </section>
+    {pinModalOpen && <PaymentPinModal busy={pinBusy} error={pinError} onClose={() => { if (!pinBusy) { setPinModalOpen(false); setPinError('') } }} onConfirm={authorizeTransfer} />}
   </>
 }
 
@@ -516,4 +557,4 @@ function App() {
 function AuthGate() { const { user, loading } = useAuth(); if (loading) return <div className="splash"><Brand /><LoaderCircle className="spin" /></div>; return user ? <Navigate to="/" replace /> : <AuthPage /> }
 
 export default App
-export { Intervention, ReportPanel }
+export { Intervention, PaymentPinModal, ReportPanel }

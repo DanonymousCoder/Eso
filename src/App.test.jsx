@@ -1,7 +1,8 @@
 import '@testing-library/jest-dom/vitest'
-import { render, screen } from '@testing-library/react'
+import { fireEvent, render, screen } from '@testing-library/react'
 import { describe, it, expect, vi } from 'vitest'
-import { Intervention } from './App'
+import { MemoryRouter } from 'react-router-dom'
+import { Intervention, PaymentPinModal } from './App'
 
 const transaction = {
   id: 'demo-id',
@@ -23,5 +24,16 @@ describe('flagged transaction intervention', () => {
     expect(screen.getByRole('heading', { name: transaction.reflection_prompt })).toBeInTheDocument()
     expect(screen.getByText(/3 other Eso users reported/i)).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /request security review/i })).toBeDisabled()
+  })
+})
+
+describe('payment PIN modal', () => {
+  it('collects four separate digits and submits one PIN value', () => {
+    const confirm = vi.fn()
+    render(<MemoryRouter><PaymentPinModal onClose={vi.fn()} onConfirm={confirm} /></MemoryRouter>)
+    const inputs = [1, 2, 3, 4].map((number) => screen.getByLabelText(`Payment PIN digit ${number}`))
+    ;['2', '5', '8', '0'].forEach((digit, index) => fireEvent.change(inputs[index], { target: { value: digit } }))
+    fireEvent.click(screen.getByRole('button', { name: /authorize and analyse/i }))
+    expect(confirm).toHaveBeenCalledWith('2580')
   })
 })
