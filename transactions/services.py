@@ -10,20 +10,54 @@ Tiered AI scoring pipeline:
 Each tier falls through to the next if unavailable.
 """
 import logging
-from datetime import datetime, timezone
+import math
+import secrets
+from collections import Counter
+from datetime import datetime, timedelta, timezone
 
 from django.utils import timezone as django_timezone
+from django.db import transaction as db_transaction
 
 import requests
 from django.conf import settings
 
-from .models import Transaction, BehaviorBaseline, LedgerEntry
+from .models import (
+    Transaction,
+    BehaviorBaseline,
+    LedgerEntry,
+    RecipientReport,
+    SecurityReview,
+)
 from .ml_model import risk_model
 from . import groq_client
 
 logger = logging.getLogger(__name__)
 
 RISK_THRESHOLD = 0.7
+CRITICAL_RISK_THRESHOLD = 0.9
+DEMO_COOLDOWN_SECONDS = 30
+
+REFLECTION_PROMPTS = [
+    "In your own words, what is this payment for?",
+    "Has anyone contacted you today asking you to send this money? Explain what happened.",
+    "How do you personally know the person or business receiving this payment?",
+]
+
+REFLECTION_RED_FLAG_PHRASES = [
+    "someone told me",
+    "someone asked me",
+    "he told me",
+    "she told me",
+    "he said",
+    "she said",
+    "asked me to",
+    "instructed me",
+    "on the phone",
+    "phone call",
+    "whatsapp",
+    "investment return",
+    "urgent transfer",
+]
 
 
 class ScoringServiceError(Exception):
@@ -46,6 +80,63 @@ def get_or_create_baseline(user_id: str) -> BehaviorBaseline:
 
 def _recent_transaction_count(user_id: str) -> int:
     return Transaction.objects.filter(user_id=user_id).count()
+
+
+def recipient_report_summary(recipient_account_id: str) -> dict:
+    account_id = (recipient_account_id or "").strip()
+    if not account_id:
+        return {"report_count": 0, "reasons": []}
+
+    reports = RecipientReport.objects.filter(recipient_account_id=account_id)
+    reason_counts = Counter(reports.values_list("reason", flat=True))
+    return {
+        "report_count": reports.count(),
+        "reasons": [
+            {"reason": reason, "count": count}
+            for reason, count in reason_counts.most_common()
+        ],
+    }
+
+
+def _apply_recipient_network_signal(result: dict, transaction: Transaction) -> dict:
+    summary = recipient_report_summary(transaction.recipient_account_id)
+    report_count = summary["report_count"]
+    score = float(result["risk_score"])
+    reason = result.get("reason", "").strip()
+
+    if report_count >= 3:
+        score = max(score, 0.92)
+        network_reason = (
+            f"Eso's shared safety network has {report_count} independent reports "
+            "about this beneficiary account"
+        )
+    elif report_count == 2:
+        score = min(1.0, score + 0.30)
+        network_reason = "Two other Eso users have reported this beneficiary account"
+    elif report_count == 1:
+        score = min(1.0, score + 0.18)
+        network_reason = "Another Eso user has reported this beneficiary account"
+    else:
+        network_reason = ""
+
+    if network_reason:
+        reason = f"{reason}; {network_reason}" if reason else network_reason
+
+    return {
+        **result,
+        "risk_score": round(min(max(score, 0.0), 1.0), 4),
+        "reason": reason,
+        "network_report_count": report_count,
+        "network_report_reasons": summary["reasons"],
+    }
+
+
+def _risk_tier(score: float) -> str:
+    if score >= CRITICAL_RISK_THRESHOLD:
+        return Transaction.RiskTier.CRITICAL
+    if score >= RISK_THRESHOLD:
+        return Transaction.RiskTier.HIGH
+    return Transaction.RiskTier.LOW
 
 
 def update_baseline_from_transaction(transaction: Transaction) -> BehaviorBaseline:
@@ -183,12 +274,19 @@ def score_transaction(transaction: Transaction) -> Transaction:
                 "reason": "Unable to verify this transaction automatically. Flagged for manual review.",
             }
 
+    result = _apply_recipient_network_signal(result, transaction)
+    tier = _risk_tier(float(result["risk_score"]))
+
     transaction.risk_score = result["risk_score"]
+    transaction.risk_tier = tier
     transaction.risk_reason = result["reason"]
+    transaction.network_report_count = result["network_report_count"]
     transaction.scored_at = datetime.now(timezone.utc)
     transaction.status = (
         Transaction.Status.FLAGGED if result["risk_score"] >= RISK_THRESHOLD else Transaction.Status.APPROVED
     )
+    if transaction.status == Transaction.Status.FLAGGED:
+        transaction.reflection_prompt = secrets.choice(REFLECTION_PROMPTS)
     transaction.save()
 
     if groq_result:
@@ -202,7 +300,11 @@ def score_transaction(transaction: Transaction) -> Transaction:
         user_id=transaction.user_id,
         transaction=transaction,
         event_type="flagged" if transaction.status == Transaction.Status.FLAGGED else "scored",
-        detail=f"[{source}] risk_score={result['risk_score']:.2f}; {result['reason']}",
+        detail=(
+            f"[{source}] risk_score={result['risk_score']:.2f}; "
+            f"tier={tier}; network_reports={result['network_report_count']}; "
+            f"{result['reason']}"
+        ),
     )
 
     if transaction.status == Transaction.Status.APPROVED:
@@ -211,9 +313,204 @@ def score_transaction(transaction: Transaction) -> Transaction:
     return transaction
 
 
-def apply_user_decision(transaction: Transaction, decision: str) -> Transaction:
+def submit_reflection(transaction: Transaction, answer: str) -> Transaction:
     if transaction.status != Transaction.Status.FLAGGED:
-        raise ValueError("Only flagged transactions can be decided on.")
+        raise ValueError("Reflection is only required for a flagged transaction.")
+
+    normalized_answer = " ".join((answer or "").split())
+    if len(normalized_answer) < 10:
+        raise ValueError("Please tell us a bit more before continuing.")
+
+    lowered = normalized_answer.casefold()
+    red_flags = [
+        phrase for phrase in REFLECTION_RED_FLAG_PHRASES if phrase in lowered
+    ]
+    transaction.reflection_answer = normalized_answer
+    transaction.reflection_red_flags = red_flags
+    transaction.reflection_submitted_at = django_timezone.now()
+
+    event_type = "reflection_completed"
+    if red_flags:
+        transaction.risk_score = max(float(transaction.risk_score or 0), 0.98)
+        transaction.risk_tier = Transaction.RiskTier.CRITICAL
+        transaction.cooldown_until = django_timezone.now() + timedelta(
+            seconds=DEMO_COOLDOWN_SECONDS
+        )
+        escalation_reason = (
+            "The reflection answer suggests someone may be directing this payment"
+        )
+        if escalation_reason.casefold() not in transaction.risk_reason.casefold():
+            transaction.risk_reason = (
+                f"{transaction.risk_reason}; {escalation_reason}"
+                if transaction.risk_reason
+                else escalation_reason
+            )
+        event_type = "reflection_escalated"
+    elif transaction.risk_tier == Transaction.RiskTier.CRITICAL:
+        transaction.cooldown_until = django_timezone.now() + timedelta(
+            seconds=DEMO_COOLDOWN_SECONDS
+        )
+
+    transaction.save()
+    LedgerEntry.objects.create(
+        user_id=transaction.user_id,
+        transaction=transaction,
+        event_type=event_type,
+        detail=(
+            f'Prompt: "{transaction.reflection_prompt}" Answer: "{normalized_answer}" '
+            f"Red flags: {', '.join(red_flags) if red_flags else 'none'}; "
+            f"resulting_tier={transaction.risk_tier}"
+        ),
+    )
+    return transaction
+
+
+def report_recipient(
+    transaction: Transaction, reported_by_user_id: str, reason: str, detail: str = ""
+) -> tuple[RecipientReport, int, bool]:
+    account_id = (transaction.recipient_account_id or "").strip()
+    if not account_id:
+        raise ValueError("This transaction has no beneficiary account to report.")
+
+    report, created = RecipientReport.objects.get_or_create(
+        recipient_account_id=account_id,
+        reported_by_user_id=reported_by_user_id,
+        defaults={
+            "recipient_bank": transaction.recipient_bank,
+            "recipient_name": transaction.recipient,
+            "transaction": transaction,
+            "reason": reason,
+            "detail": detail,
+        },
+    )
+    if not created:
+        report.reason = reason
+        report.detail = detail
+        report.transaction = transaction
+        report.save(update_fields=["reason", "detail", "transaction"])
+
+    report_count = RecipientReport.objects.filter(
+        recipient_account_id=account_id
+    ).count()
+    transaction.network_report_count = report_count
+    transaction.save(update_fields=["network_report_count"])
+
+    LedgerEntry.objects.create(
+        user_id=transaction.user_id,
+        transaction=transaction,
+        event_type="recipient_reported",
+        detail=(
+            f"Beneficiary account {account_id} reported for {reason}. "
+            f"Shared network report count is now {report_count}. {detail}"
+        ).strip(),
+    )
+    return report, report_count, created
+
+
+def request_security_review(transaction: Transaction) -> Transaction:
+    if transaction.status != Transaction.Status.FLAGGED:
+        raise ValueError("Only a flagged transaction can be sent for review.")
+    if transaction.risk_tier != Transaction.RiskTier.CRITICAL:
+        raise ValueError("Independent review is reserved for critical-risk transactions.")
+    if not transaction.reflection_submitted_at:
+        raise ValueError("Answer the reflection question before requesting review.")
+
+    review, created = SecurityReview.objects.get_or_create(
+        transaction=transaction,
+        defaults={"requested_by_user_id": transaction.user_id},
+    )
+    if not created and review.status != SecurityReview.Status.PENDING:
+        raise ValueError("This transaction already has a completed security review.")
+
+    transaction.status = Transaction.Status.AWAITING_REVIEW
+    transaction.save(update_fields=["status"])
+    if created:
+        LedgerEntry.objects.create(
+            user_id=transaction.user_id,
+            transaction=transaction,
+            event_type="security_review_requested",
+            detail=(
+                "Critical-risk transfer moved to independent security review. "
+                "The sender cannot release it from their own session."
+            ),
+        )
+    return transaction
+
+
+@db_transaction.atomic
+def decide_security_review(
+    transaction: Transaction, reviewer_user_id: str, decision: str, note: str = ""
+) -> Transaction:
+    transaction = Transaction.objects.select_for_update().get(pk=transaction.pk)
+    if transaction.status != Transaction.Status.AWAITING_REVIEW:
+        raise ValueError("This transaction is not awaiting security review.")
+    if reviewer_user_id == transaction.user_id:
+        raise ValueError("The sender cannot review their own transaction.")
+
+    try:
+        review = SecurityReview.objects.select_for_update().get(transaction=transaction)
+    except SecurityReview.DoesNotExist as exc:
+        raise ValueError("No security review request exists for this transaction.") from exc
+    if review.status != SecurityReview.Status.PENDING:
+        raise ValueError("This security review has already been completed.")
+
+    if decision == "approve":
+        if transaction.cooldown_until and transaction.cooldown_until > django_timezone.now():
+            remaining = math.ceil(
+                (transaction.cooldown_until - django_timezone.now()).total_seconds()
+            )
+            raise ValueError(
+                f"The minimum safety pause is still active for {remaining} seconds."
+            )
+        review.status = SecurityReview.Status.APPROVED
+        transaction.status = Transaction.Status.REVIEW_APPROVED
+        event_type = "security_review_approved"
+    elif decision == "block":
+        review.status = SecurityReview.Status.BLOCKED
+        transaction.status = Transaction.Status.BLOCKED
+        event_type = "security_review_blocked"
+    else:
+        raise ValueError("Decision must be approve or block.")
+
+    now = django_timezone.now()
+    review.reviewer_note = (note or "").strip()
+    review.reviewed_by_user_id = reviewer_user_id
+    review.reviewed_at = now
+    review.save(
+        update_fields=["status", "reviewer_note", "reviewed_by_user_id", "reviewed_at"]
+    )
+    transaction.decided_at = now
+    transaction.save(update_fields=["status", "decided_at"])
+    LedgerEntry.objects.create(
+        user_id=transaction.user_id,
+        transaction=transaction,
+        event_type=event_type,
+        detail=(
+            f"Independent reviewer {reviewer_user_id} chose to {decision}. "
+            f"Reviewer note: {review.reviewer_note or 'No note supplied.'}"
+        ),
+    )
+    return transaction
+
+
+def apply_user_decision(transaction: Transaction, decision: str) -> Transaction:
+    allowed_statuses = {Transaction.Status.FLAGGED, Transaction.Status.AWAITING_REVIEW}
+    if transaction.status not in allowed_statuses:
+        raise ValueError("Only flagged or held transactions can be decided on.")
+
+    if decision == "confirm":
+        if transaction.status == Transaction.Status.AWAITING_REVIEW:
+            raise ValueError("A held transaction can only be released by an independent reviewer.")
+        if not transaction.reflection_submitted_at:
+            raise ValueError(
+                "Answer the reflection question before continuing this transfer."
+            )
+        if transaction.risk_tier == Transaction.RiskTier.CRITICAL:
+            raise ValueError(
+                "Critical-risk transfers cannot be self-approved. Request security review instead."
+            )
+
+    was_awaiting_review = transaction.status == Transaction.Status.AWAITING_REVIEW
 
     transaction.status = (
         Transaction.Status.CONFIRMED if decision == "confirm" else Transaction.Status.CANCELLED
@@ -231,7 +528,18 @@ def apply_user_decision(transaction: Transaction, decision: str) -> Transaction:
         detail=detail,
     )
 
-    if decision == "confirm":
+    if decision == "cancel" and was_awaiting_review:
+        SecurityReview.objects.filter(transaction=transaction).update(
+            status=SecurityReview.Status.CANCELLED,
+            reviewer_note="Cancelled by the sender before review was completed.",
+            reviewed_at=transaction.decided_at,
+        )
+
+    if (
+        decision == "confirm"
+        and transaction.network_report_count == 0
+        and not transaction.reflection_red_flags
+    ):
         update_baseline_from_transaction(transaction)
 
     return transaction

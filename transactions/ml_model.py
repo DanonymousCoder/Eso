@@ -3,7 +3,6 @@ from pathlib import Path
 from datetime import datetime, timezone
 
 import joblib
-import numpy as np
 from django.conf import settings
 
 logger = logging.getLogger(__name__)
@@ -125,6 +124,8 @@ class RiskModel:
 
         if self.model is not None:
             try:
+                import numpy as np
+
                 X = np.array([[features[k] for k in WEIGHTS]])
                 score = float(self.model.predict_proba(X)[0, 1])
                 score = min(max(score, 0.0), 1.0)

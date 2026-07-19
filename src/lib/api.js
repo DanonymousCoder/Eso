@@ -73,6 +73,17 @@ export const api = {
   decideTransaction: (id, decision) => request(`/transactions/${id}/decision/`, {
     method: 'POST', body: JSON.stringify({ decision }),
   }),
+  submitReflection: (id, answer) => request(`/transactions/${id}/reflection/`, {
+    method: 'POST', body: JSON.stringify({ answer }),
+  }),
+  reportRecipient: (id, report) => request(`/transactions/${id}/report/`, {
+    method: 'POST', body: JSON.stringify(report),
+  }),
+  requestSecurityReview: (id) => request(`/transactions/${id}/review-request/`, { method: 'POST' }),
+  securityReviews: () => request('/security-reviews/'),
+  decideSecurityReview: (id, decision, note = '') => request(`/security-reviews/${id}/decision/`, {
+    method: 'POST', body: JSON.stringify({ decision, note }),
+  }),
 }
 
 export async function getLedgerWithTransactions() {

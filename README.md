@@ -12,7 +12,10 @@ The frontend lives in `src/` and covers the complete hackathon demonstration:
 - responsive guardian dashboard;
 - simulated Nigerian bank transfer form;
 - live API-backed transaction analysis;
-- explainable high-risk intervention with proceed/cancel choices;
+- required reflection questions for every flagged transfer;
+- red-flag phrase escalation and a server-enforced cooling-off period;
+- non-overridable critical holds with an independent staff review queue;
+- shared beneficiary reports that feed back into future risk scores;
 - approved, overridden, and cancelled outcome screens;
 - searchable, filterable, exportable transparency ledger; and
 - guardian preferences, notifications, and appearance settings.
@@ -32,8 +35,8 @@ npm run dev
 ```
 
 The frontend expects Django at `http://localhost:8000/api` by default and uses
-the JWT login, refresh, transaction, decision, baseline, and ledger endpoints
-documented below.
+the JWT login, refresh, transaction, reflection, report, decision, baseline,
+and ledger endpoints documented below.
 
 ## Backend
 
@@ -47,7 +50,7 @@ transparency ledger.
 eso_backend/
 ├── eso_backend/        # project config (settings, root urls)
 ├── transactions/        # the one app — everything lives here for a hackathon scope
-│   ├── models.py         # Transaction, BehaviorBaseline, LedgerEntry
+│   ├── models.py         # Transaction, BehaviorBaseline, RecipientReport, LedgerEntry
 │   ├── serializers.py     # request/response validation
 │   ├── services.py        # business logic + ML service integration (the important file)
 │   ├── views.py            # thin — just calls services.py and returns a Response
@@ -73,14 +76,23 @@ not scattered logic across every view.
 | GET | `/api/me/baseline/` | Yes | Get (or auto-create) the current user's behavioral baseline |
 | POST | `/api/transactions/` | Yes | Submit a transaction — scores it immediately, returns approved/flagged |
 | GET | `/api/transactions/<id>/` | Yes | Fetch a transaction's current state (owner only) |
-| POST | `/api/transactions/<id>/decision/` | Yes | User confirms or cancels a flagged transaction (owner only) |
+| POST | `/api/transactions/<id>/reflection/` | Yes | Record the required reflection response and escalate coached-payment language |
+| POST | `/api/transactions/<id>/report/` | Yes | Report the beneficiary to the shared recipient-risk registry |
+| POST | `/api/transactions/<id>/review-request/` | Yes | Place a critical transfer into independent security review |
+| POST | `/api/transactions/<id>/decision/` | Yes | Confirm or cancel after reflection and any required cooling-off period |
+| GET | `/api/security-reviews/` | Staff | List critical transfers awaiting independent review |
+| POST | `/api/security-reviews/<id>/decision/` | Staff | Independently approve or block a held transfer |
 | GET | `/api/me/ledger/` | Yes | Transparency log for the activity screen |
 
 **Auth is JWT-based** (`djangorestframework-simplejwt`). All routes except
 register/login/refresh require `Authorization: Bearer <access_token>`.
-`user_id` is never accepted from the client — it's always derived from the
+`user_id` is never accepted from the client — it is always derived from the
 authenticated token, so nobody can submit transactions or read data under
-someone else's identity. See `HOW_TO_RUN.md` for the full request examples.
+someone else's identity.
+
+Cooling-off and reviewer authorization are checked again by Django. Critical
+transfers cannot be self-approved at all, so removing a disabled state in
+browser developer tools does not release the payment.
 
 ## Integrating with the ML dev
 
@@ -117,9 +129,28 @@ the transaction for manual review rather than silently approving it.
 
 ## Running it
 
-See `HOW_TO_RUN.md` for full setup, local testing with curl, running
-alongside the ML dev's service, and deployment steps for the Live URL
-submission requirement.
+Run migrations and start Django, then start Vite in a second terminal:
+
+```bash
+python manage.py migrate
+python manage.py runserver
+npm run dev
+```
+
+Create a separate reviewer account for the demo. Do not reuse the sender's
+credentials:
+
+```bash
+python manage.py create_demo_reviewer --password "choose-a-demo-password"
+```
+
+Sign into a second browser profile with username `eso_reviewer`; staff users
+see the **Security Reviews** queue in the sidebar. No default reviewer password
+is stored in the repository.
+
+The seeded beneficiary account `8091234567` has three simulated community
+reports. Use the “Community-reported account” scenario to demonstrate a
+transfer being escalated because of network reputation rather than amount.
 
 ## Not in scope for the hackathon MVP
 
@@ -128,3 +159,6 @@ submission requirement.
   simulated transaction data), so it's not a gap against what was promised.
 - No real Mono/Okra account-aggregation integration — that's phase 3 in the
   proposal, post-hackathon.
+- No facial identity matching. A future liveness challenge should use real
+  landmark detection and be described accurately as presence/liveness, not as
+  proof that the account owner is acting free from coercion.

@@ -3,6 +3,7 @@ from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
 from rest_framework.exceptions import PermissionDenied
+from rest_framework.permissions import IsAdminUser
 
 from .models import Transaction, LedgerEntry
 from .serializers import (
@@ -11,6 +12,10 @@ from .serializers import (
     TransactionDecisionSerializer,
     LedgerEntrySerializer,
     BehaviorBaselineSerializer,
+    ReflectionAnswerSerializer,
+    RecipientReportCreateSerializer,
+    RecipientReportSerializer,
+    SecurityReviewDecisionSerializer,
 )
 from . import services
 
@@ -75,6 +80,101 @@ class TransactionDecisionView(APIView):
         except ValueError as exc:
             return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
 
+        return Response(TransactionSerializer(transaction).data)
+
+
+class TransactionReflectionView(APIView):
+    """POST /api/transactions/<id>/reflection/ — required step-up response."""
+
+    def post(self, request, transaction_id):
+        transaction = get_object_or_404(Transaction, id=transaction_id)
+        _assert_owns(request, transaction)
+        serializer = ReflectionAnswerSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        try:
+            transaction = services.submit_reflection(
+                transaction, serializer.validated_data["answer"]
+            )
+        except ValueError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+        return Response(TransactionSerializer(transaction).data)
+
+
+class TransactionRecipientReportView(APIView):
+    """POST /api/transactions/<id>/report/ — feeds the shared recipient registry."""
+
+    def post(self, request, transaction_id):
+        transaction = get_object_or_404(Transaction, id=transaction_id)
+        _assert_owns(request, transaction)
+        serializer = RecipientReportCreateSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        try:
+            report, report_count, created = services.report_recipient(
+                transaction=transaction,
+                reported_by_user_id=str(request.user.id),
+                reason=serializer.validated_data["reason"],
+                detail=serializer.validated_data.get("detail", ""),
+            )
+        except ValueError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+        return Response(
+            {
+                "report": RecipientReportSerializer(report).data,
+                "report_count": report_count,
+                "created": created,
+                "transaction": TransactionSerializer(transaction).data,
+            },
+            status=status.HTTP_201_CREATED if created else status.HTTP_200_OK,
+        )
+
+
+class TransactionSecurityReviewRequestView(APIView):
+    """POST — move a critical transaction into a non-self-releasable hold."""
+
+    def post(self, request, transaction_id):
+        transaction = get_object_or_404(Transaction, id=transaction_id)
+        _assert_owns(request, transaction)
+        try:
+            transaction = services.request_security_review(transaction)
+        except ValueError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        return Response(TransactionSerializer(transaction).data, status=status.HTTP_201_CREATED)
+
+
+class SecurityReviewQueueView(APIView):
+    """GET — staff-only queue of critical transfers awaiting a decision."""
+
+    permission_classes = [IsAdminUser]
+
+    def get(self, request):
+        transactions = Transaction.objects.filter(
+            status=Transaction.Status.AWAITING_REVIEW
+        ).select_related("security_review")
+        return Response(TransactionSerializer(transactions, many=True).data)
+
+
+class SecurityReviewDecisionView(APIView):
+    """POST — staff-only independent approve/block decision."""
+
+    permission_classes = [IsAdminUser]
+
+    def post(self, request, transaction_id):
+        transaction = get_object_or_404(Transaction, id=transaction_id)
+        serializer = SecurityReviewDecisionSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        try:
+            transaction = services.decide_security_review(
+                transaction=transaction,
+                reviewer_user_id=str(request.user.id),
+                decision=serializer.validated_data["decision"],
+                note=serializer.validated_data.get("note", ""),
+            )
+        except ValueError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
         return Response(TransactionSerializer(transaction).data)
 
 

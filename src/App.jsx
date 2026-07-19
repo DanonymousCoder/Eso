@@ -1,9 +1,9 @@
 import { createContext, useContext, useEffect, useMemo, useState } from 'react'
 import { Link, Navigate, Route, Routes, useLocation, useNavigate } from 'react-router-dom'
 import {
-  ArrowLeft, ArrowRight, Bell, BrainCircuit, Check, CheckCircle2, ChevronDown,
+  ArrowLeft, ArrowRight, Bell, BrainCircuit, Check, CheckCircle2, ChevronDown, ClipboardCheck,
   CircleDollarSign, Clock3, Copy, Download, Eye, FileCheck2, Gauge, LayoutDashboard,
-  LoaderCircle, LockKeyhole, LogOut, Menu, Moon, Search, Send, Settings as SettingsIcon,
+  Flag, LoaderCircle, LockKeyhole, LogOut, Menu, MessageSquareText, Moon, Search, Send, Settings as SettingsIcon,
   Shield, ShieldAlert, ShieldCheck, Sparkles, Sun, TrendingUp, TriangleAlert, UserRound,
   UsersRound, WalletCards, X, XCircle,
 } from 'lucide-react'
@@ -20,6 +20,9 @@ const compactNaira = new Intl.NumberFormat('en-NG', { notation: 'compact', style
 const statusMap = {
   approved: { label: 'Approved', tone: 'safe' },
   flagged: { label: 'Flagged', tone: 'warning' },
+  awaiting_review: { label: 'Security hold', tone: 'warning' },
+  review_approved: { label: 'Review approved', tone: 'safe' },
+  blocked: { label: 'Blocked', tone: 'danger' },
   confirmed: { label: 'Override', tone: 'warning' },
   cancelled: { label: 'Cancelled', tone: 'danger' },
   pending: { label: 'Pending', tone: 'neutral' },
@@ -119,7 +122,7 @@ function AuthPage() {
 
 const navItems = [
   ['/', 'Dashboard', LayoutDashboard], ['/send', 'Send Money', Send],
-  ['/ledger', 'Transparency Ledger', WalletCards], ['/settings', 'Settings', SettingsIcon],
+  ['/ledger', 'Transparency Ledger', WalletCards], ['/reviews', 'Security Reviews', ClipboardCheck], ['/settings', 'Settings', SettingsIcon],
 ]
 
 function Shell({ children }) {
@@ -127,7 +130,7 @@ function Shell({ children }) {
   return <div className="app-shell">
     <aside className={`sidebar ${open ? 'open' : ''}`}>
       <div className="side-head"><Brand /><button className="icon-button mobile-only" onClick={() => setOpen(false)}><X /></button></div>
-      <nav>{navItems.map(([path, label, Icon]) => <Link key={path} to={path} className={location.pathname === path ? 'active' : ''} onClick={() => setOpen(false)}><Icon size={20} />{label}</Link>)}</nav>
+      <nav>{navItems.filter(([path]) => path !== '/reviews' || user?.is_staff).map(([path, label, Icon]) => <Link key={path} to={path} className={location.pathname === path ? 'active' : ''} onClick={() => setOpen(false)}><Icon size={20} />{label}</Link>)}</nav>
       <div className="sidebar-user"><span className="avatar">{user?.username?.[0]?.toUpperCase()}</span><span><b>{user?.username}</b><small>Guardian active</small></span><button title="Sign out" onClick={logout}><LogOut size={17} /></button></div>
     </aside>
     {open && <button className="sidebar-scrim" aria-label="Close menu" onClick={() => setOpen(false)} />}
@@ -158,7 +161,7 @@ function Dashboard() {
   useEffect(() => { getLedgerWithTransactions().then(setItems).catch(() => {}).finally(() => setLoading(false)) }, [])
   const unique = [...new Map(items.map((item) => [item.transaction, item.transactionDetail])).values()].filter(Boolean)
   const avg = unique.length ? unique.reduce((sum, t) => sum + Number(t.risk_score || 0), 0) / unique.length : 0
-  const approved = unique.filter((t) => t.status === 'approved').length
+  const approved = unique.filter((t) => ['approved', 'review_approved'].includes(t.status)).length
   const trust = Math.max(0, Math.round((1 - avg) * 100))
   const hour = new Date().getHours(); const greeting = hour < 12 ? 'Good morning' : hour < 18 ? 'Good afternoon' : 'Good evening'
   return <>
@@ -202,15 +205,15 @@ const DEMO_SCENARIOS = [
     description: 'Monthly support — sister in Lagos',
   },
   {
-    id: 'sim-swap',
-    label: 'SIM swap red flag',
-    tag: 'Fraud pattern',
+    id: 'community-reported',
+    label: 'Community-reported account',
+    tag: '3 prior reports',
     tone: 'warning',
     recipient: 'Unknown beneficiary',
     bank: 'Opay',
     account: '8091234567',
-    amount: '450000',
-    description: 'Urgent transfer — new number requested via SMS',
+    amount: '85000',
+    description: 'First payment to a new supplier',
   },
   {
     id: 'late-night',
@@ -254,7 +257,10 @@ function SendMoney() {
     try {
       const result = await api.createTransaction({
         recipient: formatRecipient(form.bank, form.recipient),
+        recipient_account_id: form.account,
+        recipient_bank: form.bank,
         amount: Number(form.amount),
+        description: form.description,
         device_id: navigator.userAgent.slice(0, 150),
       })
       setTransaction(result); setProgress(100); await new Promise((resolve) => setTimeout(resolve, 450)); setStage(result.status === 'flagged' ? 'flagged' : 'approved')
@@ -265,9 +271,15 @@ function SendMoney() {
     try { const result = await api.decideTransaction(transaction.id, decision); setTransaction(result); setStage(decision === 'confirm' ? 'confirmed' : 'cancelled') }
     catch (err) { setError(err.message); setStage('flagged') }
   }
+  const requestReview = async () => {
+    setError(''); setStage('analysing'); setProgress(94)
+    try { const result = await api.requestSecurityReview(transaction.id); setTransaction(result); setStage('review') }
+    catch (err) { setError(err.message); setStage('flagged') }
+  }
   const reset = () => { setTransaction(null); setForm({ recipient: '', bank: '', account: '', amount: '', description: '' }); setStage('form'); setProgress(0) }
   if (stage === 'analysing') return <Analysis progress={progress} cancel={() => setStage(transaction ? 'flagged' : 'form')} />
-  if (stage === 'flagged') return <Intervention transaction={transaction} onConfirm={() => decide('confirm')} onCancel={() => decide('cancel')} error={error} />
+  if (stage === 'flagged') return <Intervention transaction={transaction} onTransaction={setTransaction} onConfirm={() => decide('confirm')} onCancel={() => decide('cancel')} onRequestReview={requestReview} error={error} />
+  if (stage === 'review') return <ReviewHold transaction={transaction} onCancel={() => decide('cancel')} onLedger={() => navigate('/ledger')} />
   if (['approved', 'confirmed', 'cancelled'].includes(stage)) return <TransferResult type={stage} transaction={transaction} onReset={reset} onLedger={() => navigate('/ledger')} />
   return <>
     <PageHeading eyebrow="NEW TRANSFER" title="Send money" copy="Eso analyses each transfer in real time before it leaves your account. Amounts are in Nigerian Naira (₦)." />
@@ -314,13 +326,59 @@ function reasonList(reason = '') {
   return parts.length ? parts.slice(0, 3) : ['This transfer differs from your usual behaviour.']
 }
 
-function Intervention({ transaction, onConfirm, onCancel, error }) {
-  return <div className="intervention-page"><div className="intervention-card card"><div className="warning-mark"><ShieldAlert /></div><span className="eyebrow amber">ESO INTERVENTION</span><h1>Hold on</h1><p className="lead">This transfer looks unusual.</p><RiskRing value={transaction.risk_score} tone="amber" />
+function ReportPanel({ transaction, onTransaction }) {
+  const [open, setOpen] = useState(false)
+  const [reason, setReason] = useState('impersonation')
+  const [detail, setDetail] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [message, setMessage] = useState('')
+  const submit = async () => {
+    setBusy(true); setMessage('')
+    try {
+      const result = await api.reportRecipient(transaction.id, { reason, detail })
+      onTransaction?.(result.transaction)
+      setMessage(`Report recorded. ${result.report_count} Eso user${result.report_count === 1 ? '' : 's'} have now reported this account.`)
+    } catch (err) { setMessage(err.message) } finally { setBusy(false) }
+  }
+  if (!transaction.recipient_account_id) return null
+  return <div className="report-control">
+    <button type="button" className="report-trigger" onClick={() => setOpen((value) => !value)}><Flag size={16} /> Report this recipient as suspicious</button>
+    {open && <div className="report-panel"><b>Help protect the Eso community</b><p>Your report raises this beneficiary account’s risk for other users.</p><label>What looked suspicious?<select value={reason} onChange={(event) => setReason(event.target.value)}><option value="impersonation">Impersonation</option><option value="investment">Investment scam</option><option value="romance">Romance scam</option><option value="purchase">Goods or services scam</option><option value="coercion">Pressure or coercion</option><option value="other">Other suspicious activity</option></select></label><label>What happened? <i>Optional</i><textarea value={detail} onChange={(event) => setDetail(event.target.value)} placeholder="Share a short detail without including passwords or PINs." /></label>{message && <div className="report-message">{message}</div>}<button type="button" className="button danger" onClick={submit} disabled={busy}>{busy ? <LoaderCircle className="spin" size={16} /> : <Flag size={16} />}Submit community report</button></div>}
+  </div>
+}
+
+function Intervention({ transaction, onTransaction, onConfirm, onCancel, onRequestReview, error }) {
+  const [answer, setAnswer] = useState(transaction.reflection_answer || '')
+  const [reflectionError, setReflectionError] = useState('')
+  const [busy, setBusy] = useState(false)
+  const secondsRemaining = () => transaction.cooldown_until ? Math.max(0, Math.ceil((new Date(transaction.cooldown_until).getTime() - Date.now()) / 1000)) : 0
+  const [seconds, setSeconds] = useState(secondsRemaining)
+  useEffect(() => {
+    setSeconds(secondsRemaining())
+    const timer = window.setInterval(() => setSeconds(secondsRemaining()), 500)
+    return () => window.clearInterval(timer)
+  }, [transaction.cooldown_until])
+  const reflected = Boolean(transaction.reflection_submitted_at)
+  const critical = transaction.risk_tier === 'critical'
+  const submitReflection = async () => {
+    setBusy(true); setReflectionError('')
+    try { onTransaction(await api.submitReflection(transaction.id, answer)) }
+    catch (err) { setReflectionError(err.message) } finally { setBusy(false) }
+  }
+  return <div className="intervention-page"><div className="intervention-card card"><div className="warning-mark"><ShieldAlert /></div><span className="eyebrow amber">ESO INTERVENTION</span><h1>Pause and think</h1><p className="lead">This transfer needs a more deliberate review.</p><RiskRing value={transaction.risk_score} tone="amber" />
     <section className="reasons"><span className="eyebrow muted">WHY WAS THIS FLAGGED?</span><h2>Here’s what Eso noticed</h2>{reasonList(transaction.risk_reason).map((reason, i) => <div key={reason}><span>{i === 0 ? <UserRound /> : i === 1 ? <TrendingUp /> : <Clock3 />}</span><p>{reason}</p></div>)}</section>
-    <section className="decision-copy"><b>Before you decide</b><p>Confirm that you know and trust this recipient. Completed bank transfers can be difficult to reverse.</p></section>
-    {error && <div className="form-error"><TriangleAlert size={17} />{error}</div>}
-    <div className="decision-actions"><button className="button secondary" onClick={onConfirm}>Proceed anyway</button><button className="button primary" onClick={onCancel}><XCircle size={18} /> Cancel transfer</button></div>
+    {transaction.network_report_count > 0 && <div className="network-warning"><UsersRound /><span><b>Shared safety signal</b><p>{transaction.network_report_count} other Eso user{transaction.network_report_count === 1 ? '' : 's'} reported this beneficiary account. This signal applies across the network, not only to your profile.</p></span></div>}
+    {!reflected ? <section className="reflection-step"><span className="eyebrow muted"><MessageSquareText size={14} /> REQUIRED REFLECTION</span><h2>{transaction.reflection_prompt || 'In your own words, what is this payment for?'}</h2><p>Answer independently. Do not ask anyone on a call or chat what to type.</p><textarea autoFocus value={answer} onChange={(event) => setAnswer(event.target.value)} maxLength="1000" placeholder="Write at least a short sentence…" /><small>{answer.trim().length} characters · your answer is stored in the transparency ledger</small>{reflectionError && <div className="form-error"><TriangleAlert size={17} />{reflectionError}</div>}<button type="button" className="button primary full" disabled={busy} onClick={submitReflection}>{busy ? <LoaderCircle className="spin" size={17} /> : <ArrowRight size={17} />}Review my answer</button></section> : <section className="reflection-record"><CheckCircle2 /><span><b>Your reflection was recorded</b><p>“{transaction.reflection_answer}”</p></span></section>}
+    {transaction.reflection_red_flags?.length > 0 && <div className="escalation-alert"><TriangleAlert /><span><b>Risk escalated</b><p>Your answer contains language commonly seen when someone is directing a payment: {transaction.reflection_red_flags.join(', ')}.</p></span></div>}
+    {reflected && critical && <section className="cooldown-card"><Clock3 /><div><span className="eyebrow muted">INDEPENDENT SECURITY HOLD</span><h2>{seconds > 0 ? `${seconds} second minimum pause` : 'Ready for independent review'}</h2><p>{seconds > 0 ? 'This pause continues while a separate reviewer examines the transfer. You cannot release it from this session.' : 'This transaction still requires approval from an independent security reviewer.'}</p><div className="cooldown-track"><span style={{ width: `${Math.max(0, Math.min(100, ((30 - seconds) / 30) * 100))}%` }} /></div></div></section>}
+    <ReportPanel transaction={transaction} onTransaction={onTransaction} />
+    {(error || reflectionError) && error && <div className="form-error"><TriangleAlert size={17} />{error}</div>}
+    <div className="decision-actions">{critical ? <button className="button secondary" disabled={!reflected} onClick={onRequestReview}><ClipboardCheck size={18} />Request security review</button> : <button className="button secondary" disabled={!reflected} onClick={onConfirm}>Continue after reflection</button>}<button className="button primary" onClick={onCancel}><XCircle size={18} /> Cancel transfer</button></div>
   </div></div>
+}
+
+function ReviewHold({ transaction, onCancel, onLedger }) {
+  return <div className="flow-wrap"><div className="result-card card"><span className="result-icon warning"><LockKeyhole /></span><span className="eyebrow amber">INDEPENDENT SECURITY HOLD</span><h1>Review requested</h1><p className="lead">This critical-risk transfer cannot be released from your account session.</p><div className="review-hold-summary"><div><span>Recipient</span><b>{transaction.recipient}</b></div><div><span>Amount</span><b>{naira.format(transaction.amount)}</b></div><div><span>Risk score</span><b>{Math.round((transaction.risk_score || 0) * 100)}%</b></div><div><span>Status</span><StatusPill status={transaction.status} /></div></div><div className="record-note"><ClipboardCheck /><span><b>A separate decision is now required</b><small>A security reviewer can approve or block this transaction. You can still cancel it at any time.</small></span></div><div className="decision-actions"><button className="button primary" onClick={onLedger}>View ledger</button><button className="button danger" onClick={onCancel}><XCircle size={18} />Cancel transfer</button></div></div></div>
 }
 
 function TransferResult({ type, transaction, onReset, onLedger }) {
@@ -339,14 +397,23 @@ function Ledger() {
   const unique = [...new Map(items.map((item) => [item.transaction, { ...item.transactionDetail, ledgerEvent: item.event_type, ledgerDetail: item.detail }])).values()].filter((item) => item.id)
   const filtered = unique.filter((t) => (filter === 'all' || t.status === filter || (filter === 'confirmed' && t.status === 'confirmed')) && `${t.recipient} ${t.id}`.toLowerCase().includes(query.toLowerCase()))
   const exportLedger = () => {
-    const headers = ['Date', 'Recipient', 'Amount (NGN)', 'Status', 'Risk Score', 'Risk Reason', 'Event', 'Detail', 'Transaction ID']
+    const headers = ['Date', 'Recipient', 'Account', 'Bank', 'Amount (NGN)', 'Status', 'Risk Tier', 'Risk Score', 'Network Reports', 'Risk Reason', 'Reflection Prompt', 'Reflection Answer', 'Reflection Red Flags', 'Review Status', 'Reviewer Note', 'Event', 'Detail', 'Transaction ID']
     const rows = filtered.map((t) => [
       new Date(t.created_at).toISOString(),
       t.recipient,
+      t.recipient_account_id,
+      t.recipient_bank,
       t.amount,
       t.status,
+      t.risk_tier,
       t.risk_score ?? '',
+      t.network_report_count ?? 0,
       t.risk_reason ?? '',
+      t.reflection_prompt ?? '',
+      t.reflection_answer ?? '',
+      (t.reflection_red_flags || []).join(' | '),
+      t.security_review?.status ?? '',
+      t.security_review?.reviewer_note ?? '',
       t.ledgerEvent ?? '',
       t.ledgerDetail ?? '',
       t.id,
@@ -362,15 +429,66 @@ function Ledger() {
   }
   return <>
     <PageHeading eyebrow="AUDIT TRAIL" title="Transparency ledger" copy="Every AI assessment and user decision is recorded here — export for auditors or judges." action={<button className="button secondary" onClick={exportLedger}><Download size={17} />Export CSV</button>} />
-    <div className="ledger-toolbar"><div className="ledger-search"><Search size={18} /><input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search recipient or transaction ID" /></div><div className="filter-tabs">{[['all','All'],['approved','Approved'],['flagged','Flagged'],['confirmed','Overrides'],['cancelled','Cancelled']].map(([value,label]) => <button key={value} className={filter === value ? 'active' : ''} onClick={() => setFilter(value)}>{label}<span>{value === 'all' ? unique.length : unique.filter((t) => t.status === value).length}</span></button>)}</div></div>
-    <div className="ledger-layout"><aside className="card ledger-summary"><span className="eyebrow muted">YOUR RECORD</span><h3>Decision overview</h3><div className="ledger-stat"><span>Transfers analysed</span><b>{unique.length}</b></div><div className="ledger-stat safe"><span>Approved</span><b>{unique.filter((t) => t.status === 'approved').length}</b></div><div className="ledger-stat warning"><span>Flagged / override</span><b>{unique.filter((t) => ['flagged','confirmed'].includes(t.status)).length}</b></div><div className="ledger-stat danger"><span>Cancelled</span><b>{unique.filter((t) => t.status === 'cancelled').length}</b></div><div className="tamper-note"><LockKeyhole /><p><b>Tamper-evident record</b><small>Eso preserves a clear trail of how every decision was made.</small></p></div></aside>
+    <div className="ledger-toolbar"><div className="ledger-search"><Search size={18} /><input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search recipient or transaction ID" /></div><div className="filter-tabs">{[['all','All'],['approved','Approved'],['flagged','Flagged'],['awaiting_review','In review'],['blocked','Blocked'],['cancelled','Cancelled']].map(([value,label]) => <button key={value} className={filter === value ? 'active' : ''} onClick={() => setFilter(value)}>{label}<span>{value === 'all' ? unique.length : unique.filter((t) => t.status === value).length}</span></button>)}</div></div>
+    <div className="ledger-layout"><aside className="card ledger-summary"><span className="eyebrow muted">YOUR RECORD</span><h3>Decision overview</h3><div className="ledger-stat"><span>Transfers analysed</span><b>{unique.length}</b></div><div className="ledger-stat safe"><span>Approved</span><b>{unique.filter((t) => ['approved','review_approved'].includes(t.status)).length}</b></div><div className="ledger-stat warning"><span>Flagged / held</span><b>{unique.filter((t) => ['flagged','confirmed','awaiting_review'].includes(t.status)).length}</b></div><div className="ledger-stat danger"><span>Cancelled / blocked</span><b>{unique.filter((t) => ['cancelled','blocked'].includes(t.status)).length}</b></div><div className="tamper-note"><LockKeyhole /><p><b>Tamper-evident record</b><small>Eso preserves a clear trail of how every decision was made.</small></p></div></aside>
       <section className="ledger-list">{loading ? <div className="card"><LoadingRows /></div> : filtered.length ? filtered.map((t) => <LedgerCard key={t.id} transaction={t} expanded={expanded === t.id} toggle={() => setExpanded(expanded === t.id ? null : t.id)} />) : <div className="card"><EmptyState icon={Search} title="No matching entries" copy="Try another filter or make a transfer to create a record." /></div>}</section></div>
   </>
 }
 
 function LedgerCard({ transaction: t, expanded, toggle }) {
-  const meta = statusMap[t.status] || statusMap.pending
-  return <article className={`card ledger-card ${meta.tone}`}><button className="ledger-card-main" onClick={toggle}><span className={`ledger-event-icon ${meta.tone}`}>{meta.tone === 'safe' ? <Check /> : meta.tone === 'danger' ? <X /> : <TriangleAlert />}</span><div className="ledger-primary"><div><b>{naira.format(t.amount)}</b><StatusPill status={t.status} /></div><p>to {t.recipient}</p><small>{new Date(t.created_at).toLocaleString('en-NG', { dateStyle: 'long', timeStyle: 'short' })}</small></div><div className="ledger-risk"><RiskRing value={t.risk_score} tone={meta.tone === 'danger' ? 'red' : meta.tone === 'warning' ? 'amber' : 'green'} size="small" /><ChevronDown className={expanded ? 'rotate' : ''} /></div></button>{expanded && <div className="ledger-detail"><div><span className="eyebrow muted"><BrainCircuit size={14} /> AI REASONING</span><p>{t.risk_reason || 'This transaction matched the user’s learned behaviour profile.'}</p></div><div><span className="eyebrow muted">TRANSACTION ID</span><code>{t.id}</code><button className="copy-button" onClick={() => navigator.clipboard.writeText(t.id)}><Copy size={14} /> Copy</button></div></div>}</article>
+  const [transaction, setTransaction] = useState(t)
+  useEffect(() => setTransaction(t), [t])
+  const item = transaction
+  const meta = statusMap[item.status] || statusMap.pending
+  return <article className={`card ledger-card ${meta.tone}`}>
+    <button className="ledger-card-main" onClick={toggle}><span className={`ledger-event-icon ${meta.tone}`}>{meta.tone === 'safe' ? <Check /> : meta.tone === 'danger' ? <X /> : <TriangleAlert />}</span><div className="ledger-primary"><div><b>{naira.format(item.amount)}</b><StatusPill status={item.status} />{item.risk_tier === 'critical' && <span className="pill danger">Critical</span>}</div><p>to {item.recipient}</p><small>{new Date(item.created_at).toLocaleString('en-NG', { dateStyle: 'long', timeStyle: 'short' })}</small></div><div className="ledger-risk"><RiskRing value={item.risk_score} tone={meta.tone === 'danger' ? 'red' : meta.tone === 'warning' ? 'amber' : 'green'} size="small" /><ChevronDown className={expanded ? 'rotate' : ''} /></div></button>
+    {expanded && <div className="ledger-detail">
+      <div><span className="eyebrow muted"><BrainCircuit size={14} /> AI REASONING</span><p>{item.risk_reason || 'This transaction matched the user’s learned behaviour profile.'}</p>{item.network_report_count > 0 && <p className="ledger-network"><UsersRound size={16} /><b>{item.network_report_count} shared recipient report{item.network_report_count === 1 ? '' : 's'}</b> contributed to this assessment.</p>}</div>
+      {item.reflection_answer && <div className="ledger-reflection"><span className="eyebrow muted"><MessageSquareText size={14} /> USER REFLECTION</span><b>{item.reflection_prompt}</b><blockquote>“{item.reflection_answer}”</blockquote>{item.reflection_red_flags?.length > 0 && <small>Escalation phrases: {item.reflection_red_flags.join(', ')}</small>}</div>}
+      {item.security_review && <div className="ledger-review"><span className="eyebrow muted"><ClipboardCheck size={14} /> INDEPENDENT REVIEW</span><p><b>Status:</b> {item.security_review.status}</p>{item.security_review.reviewer_note && <blockquote>“{item.security_review.reviewer_note}”</blockquote>}</div>}
+      <div><span className="eyebrow muted">TRANSACTION ID</span><code>{item.id}</code><button className="copy-button" onClick={() => navigator.clipboard.writeText(item.id)}><Copy size={14} /> Copy</button></div>
+      <ReportPanel transaction={item} onTransaction={setTransaction} />
+    </div>}
+  </article>
+}
+
+function SecurityReviews() {
+  const { user } = useAuth()
+  const [items, setItems] = useState([])
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState('')
+  const [notes, setNotes] = useState({})
+  const [busy, setBusy] = useState(null)
+  const [now, setNow] = useState(Date.now())
+  useEffect(() => {
+    if (!user?.is_staff) return
+    api.securityReviews().then(setItems).catch((err) => setError(err.message)).finally(() => setLoading(false))
+  }, [user?.is_staff])
+  useEffect(() => { const timer = window.setInterval(() => setNow(Date.now()), 500); return () => window.clearInterval(timer) }, [])
+  if (!user?.is_staff) return <Navigate to="/" replace />
+  const decide = async (transaction, decision) => {
+    setBusy(`${transaction.id}:${decision}`); setError('')
+    try {
+      await api.decideSecurityReview(transaction.id, decision, notes[transaction.id] || '')
+      setItems((current) => current.filter((item) => item.id !== transaction.id))
+    } catch (err) { setError(err.message) } finally { setBusy(null) }
+  }
+  return <>
+    <PageHeading eyebrow="INDEPENDENT CONTROL" title="Security review queue" copy="Critical-risk transfers require a decision from someone outside the sender’s session." />
+    {error && <div className="form-error review-page-error"><TriangleAlert size={17} />{error}</div>}
+    <section className="review-queue">
+      {loading ? <div className="card"><LoadingRows /></div> : items.length ? items.map((transaction) => {
+        const seconds = transaction.cooldown_until ? Math.max(0, Math.ceil((new Date(transaction.cooldown_until).getTime() - now) / 1000)) : 0
+        const hasNote = (notes[transaction.id] || '').trim().length >= 10
+        return <article className="card review-case" key={transaction.id}>
+          <div className="review-case-head"><span className="warning-mark"><ShieldAlert /></span><div><span className="eyebrow amber">CRITICAL · {Math.round(transaction.risk_score * 100)}% RISK</span><h2>{naira.format(transaction.amount)} to {transaction.recipient}</h2><small>{transaction.recipient_bank} · {transaction.recipient_account_id}</small></div><StatusPill status={transaction.status} /></div>
+          <div className="review-evidence"><div><span className="eyebrow muted"><BrainCircuit size={14} /> WHY ESO INTERVENED</span><p>{transaction.risk_reason}</p>{transaction.network_report_count > 0 && <p className="ledger-network"><UsersRound size={16} />{transaction.network_report_count} community reports on this beneficiary.</p>}</div><div><span className="eyebrow muted"><MessageSquareText size={14} /> SENDER REFLECTION</span><b>{transaction.reflection_prompt}</b><blockquote>“{transaction.reflection_answer}”</blockquote>{transaction.reflection_red_flags?.length > 0 && <small className="red-flags">Detected coaching language: {transaction.reflection_red_flags.join(', ')}</small>}</div></div>
+          <label className="review-note">Reviewer note <i>Required for a clear audit trail</i><textarea value={notes[transaction.id] || ''} onChange={(event) => setNotes((current) => ({ ...current, [transaction.id]: event.target.value }))} placeholder="Explain why this transfer should be approved or blocked." /></label>
+          <div className="review-case-actions"><button className="button danger" disabled={Boolean(busy) || !hasNote} onClick={() => decide(transaction, 'block')}><LockKeyhole size={17} />Block transfer</button><button className="button primary" disabled={Boolean(busy) || seconds > 0 || !hasNote} onClick={() => decide(transaction, 'approve')}>{busy === `${transaction.id}:approve` ? <LoaderCircle className="spin" size={17} /> : <CheckCircle2 size={17} />}{seconds > 0 ? `Approve available after ${seconds}s` : 'Approve independently'}</button></div>
+        </article>
+      }) : <div className="card"><EmptyState icon={ClipboardCheck} title="No reviews waiting" copy="New critical-risk requests will appear here." /></div>}
+    </section>
+  </>
 }
 
 function SettingsPage() {
@@ -393,8 +511,9 @@ function SettingsPage() {
 
 function App() {
   useEffect(() => { document.documentElement.dataset.theme = localStorage.getItem('eso_theme') === 'dark' ? 'dark' : '' }, [])
-  return <AuthProvider><Routes><Route path="/login" element={<AuthGate />} /><Route path="*" element={<Protected><Shell><Routes><Route path="/" element={<Dashboard />} /><Route path="/send" element={<SendMoney />} /><Route path="/ledger" element={<Ledger />} /><Route path="/settings" element={<SettingsPage />} /><Route path="*" element={<Navigate to="/" replace />} /></Routes></Shell></Protected>} /></Routes></AuthProvider>
+  return <AuthProvider><Routes><Route path="/login" element={<AuthGate />} /><Route path="*" element={<Protected><Shell><Routes><Route path="/" element={<Dashboard />} /><Route path="/send" element={<SendMoney />} /><Route path="/ledger" element={<Ledger />} /><Route path="/reviews" element={<SecurityReviews />} /><Route path="/settings" element={<SettingsPage />} /><Route path="*" element={<Navigate to="/" replace />} /></Routes></Shell></Protected>} /></Routes></AuthProvider>
 }
 function AuthGate() { const { user, loading } = useAuth(); if (loading) return <div className="splash"><Brand /><LoaderCircle className="spin" /></div>; return user ? <Navigate to="/" replace /> : <AuthPage /> }
 
 export default App
+export { Intervention, ReportPanel }

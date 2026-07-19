@@ -1,5 +1,11 @@
 from rest_framework import serializers
-from .models import Transaction, BehaviorBaseline, LedgerEntry
+from .models import (
+    Transaction,
+    BehaviorBaseline,
+    LedgerEntry,
+    RecipientReport,
+    SecurityReview,
+)
 
 
 class BehaviorBaselineSerializer(serializers.ModelSerializer):
@@ -26,12 +32,35 @@ class TransactionCreateSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Transaction
-        fields = ["id", "recipient", "amount", "device_id"]
+        fields = [
+            "id",
+            "recipient",
+            "recipient_account_id",
+            "recipient_bank",
+            "amount",
+            "description",
+            "device_id",
+        ]
         read_only_fields = ["id"]
+
+
+class SecurityReviewSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = SecurityReview
+        fields = [
+            "id",
+            "status",
+            "reviewer_note",
+            "requested_at",
+            "reviewed_at",
+        ]
+        read_only_fields = fields
 
 
 class TransactionSerializer(serializers.ModelSerializer):
     """Full transaction state, including scoring outcome — used in responses."""
+
+    security_review = SecurityReviewSerializer(read_only=True)
 
     class Meta:
         model = Transaction
@@ -39,11 +68,22 @@ class TransactionSerializer(serializers.ModelSerializer):
             "id",
             "user_id",
             "recipient",
+            "recipient_account_id",
+            "recipient_bank",
             "amount",
+            "description",
             "device_id",
             "status",
             "risk_score",
+            "risk_tier",
             "risk_reason",
+            "network_report_count",
+            "reflection_prompt",
+            "reflection_answer",
+            "reflection_red_flags",
+            "reflection_submitted_at",
+            "cooldown_until",
+            "security_review",
             "created_at",
             "scored_at",
             "decided_at",
@@ -55,6 +95,36 @@ class TransactionDecisionSerializer(serializers.Serializer):
     """What the frontend sends when the user responds to a flagged transaction."""
 
     decision = serializers.ChoiceField(choices=["confirm", "cancel"])
+
+
+class SecurityReviewDecisionSerializer(serializers.Serializer):
+    decision = serializers.ChoiceField(choices=["approve", "block"])
+    note = serializers.CharField(trim_whitespace=True, min_length=10, max_length=1000)
+
+
+class ReflectionAnswerSerializer(serializers.Serializer):
+    answer = serializers.CharField(trim_whitespace=True, max_length=1000)
+
+
+class RecipientReportCreateSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = RecipientReport
+        fields = ["reason", "detail"]
+
+
+class RecipientReportSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = RecipientReport
+        fields = [
+            "id",
+            "recipient_account_id",
+            "recipient_bank",
+            "recipient_name",
+            "reason",
+            "detail",
+            "created_at",
+        ]
+        read_only_fields = fields
 
 
 class LedgerEntrySerializer(serializers.ModelSerializer):
